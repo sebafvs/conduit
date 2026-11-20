@@ -1,0 +1,7 @@
+---
+
+- name: Configure Tor hidden service
+  hosts: tor_hidden_service
+  gather_facts: true
+  roles:
+    - tor_hidden_service

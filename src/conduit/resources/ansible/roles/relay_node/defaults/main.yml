@@ -1,0 +1,45 @@
+---
+
+# --- deploy ---
+relay_name: relay01
+relay_ssh_port: 22
+
+# --- nebula ---
+relay_nebula_enabled: true
+relay_nebula_version: "1.11.2"
+relay_nebula_overlay_ip: "10.99.0.1/24"
+relay_nebula_is_lighthouse: true
+relay_nebula_listen_port: 4242
+relay_nebula_groups:
+  - relay
+relay_nebula_firewall_allow_ssh_groups:
+  - relay
+  - redirector
+
+# Nebula cert files on the control node (pre-signed).
+# conduit apply populates these before calling the role.
+relay_nebula_ca_cert: ""
+relay_nebula_host_cert: ""
+relay_nebula_host_key: ""
+
+# Static host map entries for non-lighthouse nodes.
+# List of {nebula_ip: "10.99.0.1", public_addr: "1.2.3.4:4242"}. Empty for a lighthouse
+relay_nebula_static_hosts: []
+
+# Lighthouse overlay IPs this node reports to. Empty for a lighthouse.
+relay_nebula_lighthouse_hosts: []
+
+# --- ssh ca ---
+relay_ssh_ca_trust: true
+# CA public key content (not a path). Rendered by conduit.
+relay_ssh_ca_pubkey: ""
+
+# --- packages ---
+relay_packages:
+  - tor
+  - torsocks
+
+# --- firewall ---
+relay_firewall_enabled: true
+relay_firewall_ssh_port: 22
+relay_firewall_nebula_port: 4242

@@ -1,0 +1,7 @@
+---
+
+- name: Configure redirector
+  hosts: redirector
+  gather_facts: true
+  roles:
+    - redirector

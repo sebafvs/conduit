@@ -1,0 +1,108 @@
+---
+
+- name: Install Tor
+  ansible.builtin.apt:
+    name: tor
+    state: present
+  become: true
+
+- name: Write torrc
+  ansible.builtin.copy:
+    dest: /etc/tor/torrc
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      SocksPort 9050
+      ControlPort {{ redirector_tor_client_control_port }}
+      CookieAuthentication {{ '1' if redirector_tor_client_cookie_auth else '0' }}
+      Log notice syslog
+  become: true
+  notify: restart tor
+
+- name: Enable + start Tor
+  ansible.builtin.systemd:
+    name: tor
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Download gost binary
+  ansible.builtin.get_url:
+    url: "https://github.com/go-gost/gost/releases/download/v{{ redirector_tor_client_gost_version }}/gost_{{ redirector_tor_client_gost_version }}_linux_amd64.tar.gz"
+    dest: "/tmp/gost_{{ redirector_tor_client_gost_version }}.tar.gz"
+    mode: "0644"
+    timeout: 120
+  become: true
+  retries: 3
+  delay: 5
+  register: gost_dl
+  until: gost_dl is succeeded
+
+- name: Extract gost binary
+  ansible.builtin.unarchive:
+    src: "/tmp/gost_{{ redirector_tor_client_gost_version }}.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts: [--strip-components=0]
+    creates: /usr/local/bin/gost
+  become: true
+
+- name: Make gost executable
+  ansible.builtin.file:
+    path: /usr/local/bin/gost
+    mode: "0755"
+  become: true
+
+- name: Deploy gost systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gost.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=gost TCP relay through Tor to {{ redirector_tor_client_onion_address }}:{{ redirector_tor_client_onion_port }}
+      After=network-online.target tor.service
+      Wants=network-online.target tor.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/gost -L tcp://127.0.0.1:{{ redirector_tor_client_gost_listen_port }}/{{ redirector_tor_client_onion_address }}:{{ redirector_tor_client_onion_port }} -F socks5://127.0.0.1:9050
+      # Restart=always + no start-limit cap so gost survives SIGPIPE when the
+      # scrub restarts journald. Previous Restart=on-failure + 5s RestartSec +
+      # default start-limit let gost stay dead after the first scrub.
+      Restart=always
+      RestartSec=3
+      StartLimitIntervalSec=0
+      # Log to a dedicated file instead of journald. Keeps gost out of the
+      # journald FD-lifecycle hazards that scrub exercises.
+      StandardOutput=append:/var/log/gost.log
+      StandardError=append:/var/log/gost.log
+
+      [Install]
+      WantedBy=multi-user.target
+  become: true
+  # Notify BOTH handlers. `reload systemd` makes systemd pick up the new unit
+  # file; `restart gost` actually swaps the running daemon over to the new
+  # ExecStart (e.g. a changed onion address). Previously only `reload systemd`
+  # was notified, so gost kept running with the pre-change args indefinitely.
+  notify:
+    - reload systemd
+    - restart gost
+
+- name: Enable + start gost
+  ansible.builtin.systemd:
+    name: gost
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Install nyx (Tor monitor)
+  ansible.builtin.apt:
+    name: nyx
+    state: present
+  become: true
+  when: redirector_tor_client_install_nyx

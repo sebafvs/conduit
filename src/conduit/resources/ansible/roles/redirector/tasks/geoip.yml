@@ -1,0 +1,43 @@
+---
+
+- name: Skip GeoIP (redirector_geoip_enabled=false)
+  ansible.builtin.debug:
+    msg: "GeoIP disabled. Set redirector_geoip_enabled=true + redirector_geoip_license to enable."
+  when: not (redirector_geoip_enabled | bool)
+
+- name: Install geoipupdate (fetches MaxMind DBs)
+  ansible.builtin.apt:
+    name: geoipupdate
+    state: present
+  become: true
+  when: redirector_geoip_enabled | bool
+
+- name: Deploy GeoIP.conf with license key
+  ansible.builtin.copy:
+    dest: /etc/GeoIP.conf
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      AccountID 0
+      LicenseKey {{ redirector_geoip_license }}
+      EditionIDs GeoLite2-Country
+      DatabaseDirectory /etc/openresty/data
+  become: true
+  when: redirector_geoip_enabled | bool
+
+- name: Run geoipupdate (fetch GeoLite2-Country.mmdb)
+  ansible.builtin.command: geoipupdate -f /etc/GeoIP.conf
+  become: true
+  changed_when: true
+  when: redirector_geoip_enabled | bool
+
+- name: Install daily geoipupdate cron
+  ansible.builtin.cron:
+    name: geoipupdate daily
+    hour: "3"
+    minute: "17"
+    job: "geoipupdate -f /etc/GeoIP.conf >/dev/null 2>&1"
+    user: root
+  become: true
+  when: redirector_geoip_enabled | bool

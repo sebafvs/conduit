@@ -1,0 +1,61 @@
+---
+
+- name: Install socat
+  ansible.builtin.apt:
+    name: socat
+    state: present
+  become: true
+
+- name: Deploy TCP relay systemd units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/redirector-tcp-relay-{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=TCP relay {{ item.name }} ({{ item.listen_port }} -> {{ item.target }})
+      After=network-online.target nftables.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/socat -d TCP-LISTEN:{{ item.listen_port }},fork,reuseaddr TCP:{{ item.target }}
+      # Match gost: Restart=always + no start-limit cap so SIGPIPE from scrub
+      # does not leave the relay permanently dead.
+      Restart=always
+      RestartSec=3
+      StartLimitIntervalSec=0
+      StandardOutput=append:/var/log/tcp-relay-{{ item.name }}.log
+      StandardError=append:/var/log/tcp-relay-{{ item.name }}.log
+
+      [Install]
+      WantedBy=multi-user.target
+  loop: "{{ redirector_tcp_relays | default([], true) }}"
+  become: true
+  # `notify` on a looped task can only call static handlers, not per-item
+  # names. We take `register: tcp_relay_units` and force a restart in the next
+  # task when any unit was rewritten, so a target/port change actually swaps
+  # the running daemon over (previously it stayed on the old ExecStart).
+  register: tcp_relay_units
+  notify: reload systemd
+
+- name: Restart TCP relay services when their units changed
+  ansible.builtin.systemd:
+    name: "redirector-tcp-relay-{{ item.item.name }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ tcp_relay_units.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('') }}"
+  when: item.changed | default(false)
+  become: true
+
+- name: Enable + start TCP relay services
+  ansible.builtin.systemd:
+    name: "redirector-tcp-relay-{{ item.name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ redirector_tcp_relays | default([], true) }}"
+  become: true

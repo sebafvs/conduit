@@ -1,0 +1,5 @@
+# Required headers for redirector filter.
+# Format: HEADER_NAME:CHECK_VALUE
+#   present = header must exist (any non-empty value)
+#   any other string = header must equal that string exactly
+# Rendered by Ansible from redirector_require_headers.

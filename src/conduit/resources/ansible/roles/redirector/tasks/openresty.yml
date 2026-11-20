@@ -1,0 +1,34 @@
+---
+
+- name: Create openresty config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop:
+    - /etc/openresty
+    - /etc/openresty/conf.d
+    - /etc/openresty/lua
+    - /etc/openresty/data
+    - /etc/openresty/certs
+    - /etc/apt/keyrings
+
+- name: Create openresty log directory
+  ansible.builtin.file:
+    path: /var/log/openresty
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: "0750"
+  become: true
+
+- name: Mask the default nginx service shipped by openresty (we drive it via openresty.service)
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: false
+    masked: true
+  become: true
+  failed_when: false

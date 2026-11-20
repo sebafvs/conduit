@@ -1,0 +1,59 @@
+Teamserver:
+  interface: "{{ ts.bind_host }}"
+  port: {{ ts.bind_port }}
+  endpoint: "{{ ts.endpoint }}"
+  password: "unused"
+  only_password: {{ operators | length == 1 and operators[0].only_password | string | lower }}
+  operators:
+{% for op in operators %}
+    {{ op.name }}: "{{ op.password }}"
+{% endfor %}
+  cert: "server.rsa.crt"
+  key: "server.rsa.key"
+  extenders:
+{% if ts.extenders is not none %}
+{% for ext in ts.extenders %}
+    - "{{ ext }}"
+{% endfor %}
+{% else %}
+    - "extenders/beacon_listener_http/config.yaml"
+    - "extenders/beacon_listener_smb/config.yaml"
+    - "extenders/beacon_listener_tcp/config.yaml"
+    - "extenders/beacon_listener_dns/config.yaml"
+    - "extenders/beacon_agent/config.yaml"
+    - "extenders/gopher_listener_tcp/config.yaml"
+    - "extenders/gopher_listener_http/config.yaml"
+    - "extenders/gopher_agent/config.yaml"
+{% endif %}
+  axscripts:
+{% for ax in ts.axscripts %}
+    - "{{ ax }}"
+{% endfor %}
+  access_token_live_hours: {{ ts.access_token_live_hours }}
+  refresh_token_live_hours: {{ ts.refresh_token_live_hours }}
+
+HttpServer:
+  error:
+    status: 404
+    headers:
+      Content-Type: "text/html; charset=UTF-8"
+      Server: "{{ ts.server_response_header }}"
+    page: "404page.html"
+  http:
+    max_header_bytes: 8192
+    read_header_timeout_sec: 0
+    read_timeout_sec: 0
+    write_timeout_sec: 0
+    idle_timeout_sec: 0
+    request_timeout_sec: 300
+    request_timeout_message: "504 Gateway Timeout"
+    disable_keep_alives: false
+    enable_http2: {{ ts.enable_http2 | string | lower }}
+  tls:
+    min_version: "{{ tls.min_version }}"
+    max_version: "{{ tls.max_version }}"
+    prefer_server_cipher_suites: {{ tls.prefer_server_cipher_suites | string | lower }}
+    cipher_suites:
+{% for cs in tls.cipher_suites %}
+      - "{{ cs }}"
+{% endfor %}

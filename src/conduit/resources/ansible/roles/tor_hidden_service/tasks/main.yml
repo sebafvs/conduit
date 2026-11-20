@@ -1,0 +1,62 @@
+---
+
+- name: Install Tor
+  ansible.builtin.apt:
+    name: tor
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure hidden service directories exist
+  ansible.builtin.file:
+    path: "{{ item.hs_dir }}"
+    state: directory
+    owner: debian-tor
+    group: debian-tor
+    mode: "0700"
+  loop: "{{ tor_hs_services }}"
+  become: true
+
+- name: Write torrc
+  ansible.builtin.template:
+    src: torrc.j2
+    dest: /etc/tor/torrc
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart tor
+
+- name: Enable + start Tor
+  ansible.builtin.systemd:
+    name: tor
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+# Force any queued 'restart tor' handler to run NOW. Without this the handler
+# would wait for end-of-play, and if a later task (like Wait for hostname)
+# fails, Ansible skips handlers on the failed host. Flushing here guarantees
+# the daemon has picked up torrc changes before we check for the hostname.
+- name: Flush handlers so torrc changes apply before hostname wait
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for hidden service hostname files
+  ansible.builtin.wait_for:
+    path: "{{ item.hs_dir }}/hostname"
+    timeout: 60
+  loop: "{{ tor_hs_services }}"
+  become: true
+
+- name: Read .onion addresses
+  ansible.builtin.slurp:
+    src: "{{ item.hs_dir }}/hostname"
+  loop: "{{ tor_hs_services }}"
+  register: onion_hostnames
+  become: true
+
+- name: Print .onion addresses
+  ansible.builtin.debug:
+    msg: "{{ item.item.name }}: {{ item.content | b64decode | trim }}"
+  loop: "{{ onion_hostnames.results }}"

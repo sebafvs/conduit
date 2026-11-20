@@ -1,0 +1,58 @@
+---
+
+- name: reload openresty
+  ansible.builtin.command: /usr/local/openresty/nginx/sbin/nginx -s reload
+  become: true
+  changed_when: true
+
+- name: restart openresty
+  ansible.builtin.command: systemctl restart openresty
+  become: true
+  changed_when: true
+
+- name: restart fail2ban
+  ansible.builtin.command: systemctl restart fail2ban
+  become: true
+  changed_when: true
+
+- name: reload nftables
+  ansible.builtin.command: nft -f /etc/nftables.conf
+  become: true
+  changed_when: true
+
+- name: reload systemd
+  ansible.builtin.command: systemctl daemon-reload
+  become: true
+  changed_when: true
+
+- name: restart tor
+  ansible.builtin.command: systemctl restart tor
+  become: true
+  changed_when: true
+
+- name: restart nebula
+  ansible.builtin.command: systemctl restart nebula
+  become: true
+  changed_when: true
+
+- name: restart gost
+  ansible.builtin.command: systemctl restart gost
+  become: true
+  changed_when: true
+
+# Full restart (not reload) is needed when journald.conf changes Storage=
+# because journald only re-reads Storage at service start. This handler
+# runs AT THE END of the play, so any service that lost its stderr pipe
+# gets picked up by its own handler. But since Storage=volatile only
+# matters at daemon start, running this only during provisioning (not
+# every scrub) means no SIGPIPE cascade mid-engagement.
+- name: restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  become: true
+
+- name: restart sshd
+  ansible.builtin.shell: systemctl restart sshd || systemctl restart ssh
+  become: true
+  changed_when: true

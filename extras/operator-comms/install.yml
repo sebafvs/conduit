@@ -1,0 +1,112 @@
+---
+# Install + enable OnionShare chat in an isolated venv on the teamserver.
+# Runs locally on the teamserver (no SSH), produces a persistent chat room.
+# Private key + URL are written to /opt/onionshare-persistent/chat.cfg.
+#
+# Invocation (from the teamserver):
+#   cd conduit/extras/operator-comms
+#   cp inventory.yml.example inventory.yml
+#   ansible-playbook -i inventory.yml install.yml -vvv
+
+- name: Install OnionShare chat (persistent, isolated venv)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    onionshare_venv: /opt/onionshare-venv
+    onionshare_state_dir: /opt/onionshare-persistent
+    onionshare_config: "{{ onionshare_state_dir }}/chat.cfg"
+    service_name: onionshare-chat
+
+  tasks:
+    - name: Install python3-venv + tor system packages
+      ansible.builtin.apt:
+        name:
+          - python3-venv
+          - python3-pip
+          - tor
+        state: present
+        update_cache: true
+        cache_valid_time: 600
+
+    - name: Create isolated venv for onionshare-cli
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-m"
+          - venv
+          - "{{ onionshare_venv }}"
+        creates: "{{ onionshare_venv }}/bin/python"
+
+    - name: Install onionshare-cli from PyPI into the venv (no apt-pin conflicts)
+      ansible.builtin.command:
+        argv:
+          - "{{ onionshare_venv }}/bin/pip"
+          - install
+          - "--upgrade"
+          - onionshare-cli
+      register: pip_install
+      changed_when:
+        - "'Successfully installed' in pip_install.stdout or 'Successfully installed' in pip_install.stderr"
+
+    - name: Persistent state dir (holds the chat.cfg with v3 onion keys)
+      ansible.builtin.file:
+        path: "{{ onionshare_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy systemd unit for the chat room
+      ansible.builtin.template:
+        src: templates/onionshare-chat.service.j2
+        dest: "/etc/systemd/system/{{ service_name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: reload + restart onionshare-chat
+
+    - name: Enable + start onionshare-chat
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Flush handlers so restarts settle before reading config
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for chat.cfg to appear (first run creates it on service start)
+      ansible.builtin.wait_for:
+        path: "{{ onionshare_config }}"
+        timeout: 60
+
+    - name: Read chat.cfg to extract the URL + private key
+      ansible.builtin.slurp:
+        src: "{{ onionshare_config }}"
+      register: chat_cfg_raw
+
+    - name: Parse chat.cfg JSON
+      ansible.builtin.set_fact:
+        chat_cfg: "{{ chat_cfg_raw.content | b64decode | from_json }}"
+
+    - name: Report connection details
+      ansible.builtin.debug:
+        msg:
+          - "OnionShare chat is live. Share these TWO values with the other operator:"
+          - ""
+          - "  URL:         http://{{ chat_cfg.general.onion_hostname | default('(pending)') }}.onion"
+          - "  Private key: {{ chat_cfg.general.client_auth_priv_key | default('(pending)') }}"
+          - ""
+          - "Service: systemctl status {{ service_name }}"
+          - "Config:  {{ onionshare_config }}"
+          - "Venv:    {{ onionshare_venv }}"
+
+  handlers:
+    - name: reload + restart onionshare-chat
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+        daemon_reload: true

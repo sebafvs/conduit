@@ -1,0 +1,306 @@
+---
+# conduit operator-bootstrap: WireGuard overlay + autossh tunnel.
+#
+# Touches BOTH the teamserver (via SSH) and the operator box (local).
+# Does NOT touch the teamserver firewall. Run ssh-lockdown.yml for that,
+# AFTER you confirm the Adaptix GUI connects through the tunnel.
+#
+# Idempotent. Safe to re-run; keys are kept, configs are re-rendered,
+# services are restarted only on change.
+#
+# Invocation:
+#   cd conduit/ansible/operator-bootstrap
+#   cp inventory.yml.example inventory.yml   # edit TEAMSERVER_PUBLIC_IP
+#   ansible-playbook -i inventory.yml operator-bootstrap.yml -vvv
+#
+# Required: network path from operator box to teamserver public IP + port 22
+# for the SSH control channel, and UDP wg_listen_port for the overlay itself.
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 1: install WG + keygen on the teamserver, capture pubkey
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Teamserver - install WireGuard + generate keypair
+  hosts: teamserver
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Install wireguard tools
+      ansible.builtin.apt:
+        name:
+          - wireguard
+          - wireguard-tools
+        state: present
+        update_cache: true
+
+    - name: Ensure /etc/wireguard exists with strict perms
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Check if teamserver WG private key already exists
+      ansible.builtin.stat:
+        path: /etc/wireguard/server.key
+      register: ts_privkey_stat
+
+    - name: Generate teamserver WG keypair (idempotent)
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          umask 077
+          wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+          chmod 600 /etc/wireguard/server.key
+          chmod 644 /etc/wireguard/server.pub
+      when: not ts_privkey_stat.stat.exists
+      changed_when: true
+
+    - name: Read teamserver private key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.key
+      register: ts_privkey_raw
+      no_log: true
+
+    - name: Read teamserver public key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.pub
+      register: ts_pubkey_raw
+
+    - name: Set teamserver WG key facts
+      ansible.builtin.set_fact:
+        teamserver_wg_privkey: "{{ ts_privkey_raw.content | b64decode | trim }}"
+        teamserver_wg_pubkey:  "{{ ts_pubkey_raw.content  | b64decode | trim }}"
+      no_log: true
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 2: install WG + autossh + keygen on the operator box
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Operator - install WireGuard + autossh + generate keypair
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Install wireguard + autossh
+      ansible.builtin.apt:
+        name:
+          - wireguard
+          - wireguard-tools
+          - autossh
+        state: present
+        update_cache: true
+
+    - name: Ensure /etc/wireguard exists with strict perms
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Check if operator WG private key already exists
+      ansible.builtin.stat:
+        path: /etc/wireguard/operator.key
+      register: op_privkey_stat
+
+    - name: Generate operator WG keypair (idempotent)
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          umask 077
+          wg genkey | tee /etc/wireguard/operator.key | wg pubkey > /etc/wireguard/operator.pub
+          chmod 600 /etc/wireguard/operator.key
+          chmod 644 /etc/wireguard/operator.pub
+      when: not op_privkey_stat.stat.exists
+      changed_when: true
+
+    - name: Read operator private key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/operator.key
+      register: op_privkey_raw
+      no_log: true
+
+    - name: Read operator public key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/operator.pub
+      register: op_pubkey_raw
+
+    - name: Set operator WG key facts
+      ansible.builtin.set_fact:
+        operator_wg_privkey: "{{ op_privkey_raw.content | b64decode | trim }}"
+        operator_wg_pubkey:  "{{ op_pubkey_raw.content  | b64decode | trim }}"
+      no_log: true
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 3: render teamserver's WG config + bring interface up
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Teamserver - render WG config + enable wg-quick@conduit
+  hosts: teamserver
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Render /etc/wireguard/conduit.conf on teamserver
+      ansible.builtin.template:
+        src: templates/teamserver-wg.conf.j2
+        dest: /etc/wireguard/conduit.conf
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        operator_wg_pubkey: "{{ hostvars['localhost']['operator_wg_pubkey'] }}"
+      notify: restart wg-quick conduit
+      no_log: true
+
+    - name: Enable + start wg-quick@conduit on teamserver
+      ansible.builtin.systemd:
+        name: wg-quick@conduit
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Show teamserver WG status
+      ansible.builtin.command: wg show conduit
+      register: ts_wg_show
+      changed_when: false
+
+    - name: Report teamserver WG status
+      ansible.builtin.debug:
+        msg: "{{ ts_wg_show.stdout_lines }}"
+
+  handlers:
+    - name: restart wg-quick conduit
+      ansible.builtin.systemd:
+        name: wg-quick@conduit
+        state: restarted
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 4: render operator's WG config + bring interface up + verify
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Operator - render WG config + enable wg-quick@conduit + verify
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Render /etc/wireguard/conduit.conf on operator
+      ansible.builtin.template:
+        src: templates/operator-wg.conf.j2
+        dest: /etc/wireguard/conduit.conf
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        teamserver_wg_pubkey: "{{ hostvars['teamserver']['teamserver_wg_pubkey'] }}"
+      notify: restart wg-quick conduit (operator)
+      no_log: true
+
+    - name: Enable + start wg-quick@conduit on operator
+      ansible.builtin.systemd:
+        name: wg-quick@conduit
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for WG handshake (ping teamserver overlay IP)
+      ansible.builtin.command: "ping -c 2 -W 3 {{ wg_teamserver_ip }}"
+      register: wg_ping
+      changed_when: false
+      retries: 20
+      delay: 5
+      until: wg_ping.rc == 0
+
+    - name: Report operator WG status
+      ansible.builtin.command: wg show conduit
+      register: op_wg_show
+      changed_when: false
+
+    - name: Show operator WG status
+      ansible.builtin.debug:
+        msg: "{{ op_wg_show.stdout_lines }}"
+
+  handlers:
+    - name: restart wg-quick conduit (operator)
+      ansible.builtin.systemd:
+        name: wg-quick@conduit
+        state: restarted
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 5: autossh tunnel for Adaptix client on operator
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Operator - Adaptix tunnel systemd unit
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  vars:
+    operator_ssh_key_expanded: "{{ operator_ssh_key | expanduser }}"
+
+  tasks:
+    - name: Assert operator SSH key path exists
+      ansible.builtin.stat:
+        path: "{{ operator_ssh_key_expanded }}"
+      register: op_sshkey_stat
+
+    - name: Fail if operator SSH key is missing
+      ansible.builtin.fail:
+        msg: >
+          Operator SSH key not found at {{ operator_ssh_key_expanded }}. Point
+          operator_ssh_key at the right path (ansible-playbook -e
+          operator_ssh_key=/home/you/.ssh/some_key) or generate one with
+          ssh-keygen and push its pubkey to the teamserver before re-running.
+      when: not op_sshkey_stat.stat.exists
+
+    - name: Render /etc/systemd/system/adaptix-tunnel.service
+      ansible.builtin.template:
+        src: templates/adaptix-tunnel.service.j2
+        dest: /etc/systemd/system/adaptix-tunnel.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: reload + restart adaptix-tunnel
+
+    - name: Enable + start adaptix-tunnel
+      ansible.builtin.systemd:
+        name: adaptix-tunnel
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for autossh port forward to come up
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ adaptix_forward_port }}"
+        delay: 1
+        timeout: 15
+
+    - name: Final summary
+      ansible.builtin.debug:
+        msg:
+          - "WG teamserver: {{ wg_teamserver_ip }} (listen UDP {{ wg_listen_port }})"
+          - "WG operator:   {{ wg_operator_ip }}"
+          - "autossh:       127.0.0.1:{{ adaptix_forward_port }} -> {{ wg_teamserver_ip }}:{{ adaptix_remote_port }}"
+          - "Adaptix client target: 127.0.0.1:{{ adaptix_forward_port }}"
+          - ""
+          - "Next step (optional): run ssh-lockdown.yml to firewall public SSH on the teamserver."
+
+  handlers:
+    - name: reload + restart adaptix-tunnel
+      ansible.builtin.systemd:
+        name: adaptix-tunnel
+        state: restarted
+        daemon_reload: true

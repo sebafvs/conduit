@@ -1,0 +1,100 @@
+name: {{ meta.name }}
+
+services:
+{% if build.server %}
+  server-ext-builder:
+    profiles: [build]
+    build:
+      context: ./AdaptixC2
+      target: build-server-ext
+    container_name: {{ meta.name }}-builder
+    volumes:
+      - ./AdaptixC2/AdaptixServer/server-dist:/server-dist
+    command: >
+      sh -c "mkdir -p /server-dist &&
+             cp /app/dist/adaptixserver /app/dist/ssl_gen.sh /app/dist/profile.yaml /app/dist/404page.html /server-dist/ &&
+             cp -r /app/dist/extenders /server-dist/"
+{% endif %}
+
+{% if build.client %}
+  client-builder:
+    profiles: [build]
+    build:
+      context: ./AdaptixC2
+      target: build-client
+    container_name: {{ meta.name }}-client-builder
+    volumes:
+      - ./AdaptixC2/AdaptixClient/client-dist:/client-dist-output
+    command: sh -c "cp -r /client-dist/* /client-dist-output/"
+{% endif %}
+
+{% if build.bofs %}
+  extensions-builder:
+    profiles: [build]
+    image: adaptix/server:local
+    container_name: {{ meta.name }}-ext-builder
+    entrypoint: ""
+    volumes:
+      - "./Extension Kit:/work"
+    working_dir: /work
+    command: >
+      bash -c "apt-get update -qq &&
+               apt-get install -y -qq --no-install-recommends python3 &&
+               make"
+{% endif %}
+
+  adaptix-server:
+    build:
+      context: ./AdaptixC2
+      target: runtime
+    image: adaptix/server:local
+    container_name: adaptix-server
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+    volumes:
+      - ./config/profile.yaml:/app/profile.yaml:ro
+      - ./data:/app/data
+    ports:
+      - "{{ ts.publish_host }}:{{ ts.publish_port }}:{{ ts.bind_port }}"
+{% for lst in listeners %}
+      - "{{ lst.publish_host }}:{{ lst.publish_port or lst.bind_port }}:{{ lst.bind_port }}{% if lst.protocol.value == 'udp' %}/udp{% endif %}"
+{% endfor %}
+    networks:
+      - c2_internal
+{% if ts.resources %}
+    deploy:
+      resources:
+        limits:
+          cpus: '{{ ts.resources.cpu_limit }}'
+          memory: {{ ts.resources.memory_limit }}
+{% endif %}
+
+{% if payload and payload.enabled %}
+  adaptix-payload:
+    image: nginx:alpine
+    container_name: adaptix-payload
+    restart: unless-stopped
+    ports:
+      - "{{ payload.bind_host }}:{{ payload.bind_port_http }}:80"
+      - "{{ payload.bind_host }}:{{ payload.bind_port_https }}:443"
+    volumes:
+      - ./staging/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./staging/www:/usr/share/nginx/html:ro
+      - ./certs/leaf:/etc/nginx/certs:ro
+    networks:
+      - c2_dmz
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+{% endif %}
+
+networks:
+  c2_internal:
+    name: c2_internal
+    driver: bridge
+  c2_dmz:
+    name: c2_dmz
+    driver: bridge

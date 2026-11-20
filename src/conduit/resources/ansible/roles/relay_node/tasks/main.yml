@@ -1,0 +1,17 @@
+---
+# relay_node role entry point.
+
+- name: Base packages
+  import_tasks: packages.yml
+
+- name: Nebula mesh VPN
+  import_tasks: nebula.yml
+  when: relay_nebula_enabled
+
+- name: SSH Certificate Authority trust
+  import_tasks: ssh_ca.yml
+  when: relay_ssh_ca_trust
+
+- name: Host firewall (nftables)
+  import_tasks: firewall.yml
+  when: relay_firewall_enabled

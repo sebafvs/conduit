@@ -1,0 +1,41 @@
+# Python
+.venv/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg
+
+# Local-only config files (your real IPs, keys, telegram tokens, etc.)
+# Keep examples/*.yml sanitized for public eyes; stash real configs here.
+examples/_private/
+examples/local-*.yml
+examples/*.local.yml
+
+# Local state the TUI and monitors write
+dashboard-cache.json
+dashboard-settings.json
+.secrets.yml
+.secrets.*.yml
+
+# Secrets / keys / certs that might land in the tree during apply
+*.pem
+*.key
+*.crt
+!conduit/redirector/openresty/certs/*.example.*
+staging/
+*.staging/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

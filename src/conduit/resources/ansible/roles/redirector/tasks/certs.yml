@@ -1,0 +1,200 @@
+---
+
+- name: Assert CA exists on control node
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  delegate_to: localhost
+  run_once: true
+  register: _redir_ca_stat
+  loop:
+    - "{{ redirector_ca_cert }}"
+    - "{{ redirector_ca_key }}"
+  when: redirector_cert_source == "self-signed"
+
+- name: Fail if CA material missing
+  ansible.builtin.fail:
+    msg: "CA missing at {{ redirector_ca_dir }}. Generate it first."
+  when:
+    - redirector_cert_source == "self-signed"
+    - _redir_ca_stat.results | map(attribute='stat.exists') | select('equalto', false) | list | length > 0
+
+- name: Install python cryptography (needed by community.crypto modules)
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+  become: true
+  when: redirector_cert_source == "self-signed"
+
+- name: Stage CA cert + key on redirector (needed by ownca provider)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - { src: "{{ redirector_ca_cert }}", dest: "/etc/openresty/certs/ca.crt", mode: "0644" }
+    - { src: "{{ redirector_ca_key }}",  dest: "/etc/openresty/certs/ca.key", mode: "0600" }
+  when: redirector_cert_source == "self-signed"
+  no_log: true
+
+- name: Generate TLS private key on redirector
+  community.crypto.openssl_privatekey:
+    path: /etc/openresty/certs/redirector.key
+    size: 2048
+    mode: "0600"
+    owner: root
+    group: root
+  become: true
+  when: redirector_cert_source == "self-signed"
+
+- name: Generate CSR for the redirector cert
+  community.crypto.openssl_csr:
+    path: /etc/openresty/certs/redirector.csr
+    privatekey_path: /etc/openresty/certs/redirector.key
+    common_name: "{{ redirector_cert_cn }}"
+    organization_name: "{{ redirector_cert_org }}"
+    subject_alt_name: "{{ redirector_sni_allow | map('regex_replace', '^(.*)$', 'DNS:\\1') | list }}"
+    mode: "0640"
+    owner: root
+    group: root
+  become: true
+  when: redirector_cert_source == "self-signed"
+
+- name: Issue leaf cert signed by CA
+  community.crypto.x509_certificate:
+    path: /etc/openresty/certs/redirector.crt
+    csr_path: /etc/openresty/certs/redirector.csr
+    provider: ownca
+    ownca_path: /etc/openresty/certs/ca.crt
+    ownca_privatekey_path: /etc/openresty/certs/ca.key
+    ownca_not_after: "+{{ redirector_cert_days }}d"
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  when: redirector_cert_source == "self-signed"
+  notify: reload openresty
+
+- name: Remove CA private key from redirector (only needed for signing)
+  ansible.builtin.file:
+    path: /etc/openresty/certs/ca.key
+    state: absent
+  become: true
+  when: redirector_cert_source == "self-signed"
+
+- name: Letsencrypt - sanity-check required inputs
+  ansible.builtin.assert:
+    that:
+      - redirector_cert_letsencrypt_domain | length > 0
+      - redirector_cert_letsencrypt_email  | length > 0
+    fail_msg: >-
+      redirector_cert_source=letsencrypt requires redirector_cert_letsencrypt_domain
+      and redirector_cert_letsencrypt_email.
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - install certbot
+  ansible.builtin.apt:
+    name:
+      - certbot
+    state: present
+    update_cache: true
+  become: true
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - ensure certs dir exists
+  ansible.builtin.file:
+    path: /etc/openresty/certs
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - probe existing LE live cert
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ redirector_cert_letsencrypt_domain }}/fullchain.pem"
+  register: _redir_le_live
+  become: true
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - stop openresty before challenge (first-run / renewal)
+  ansible.builtin.systemd:
+    name: openresty
+    state: stopped
+  become: true
+  when:
+    - redirector_cert_source == "letsencrypt"
+    - not _redir_le_live.stat.exists | default(false)
+  failed_when: false
+
+- name: Letsencrypt - obtain cert via HTTP-01 standalone
+  ansible.builtin.command: >-
+    certbot certonly
+    --standalone
+    --non-interactive
+    --agree-tos
+    -m {{ redirector_cert_letsencrypt_email }}
+    -d {{ redirector_cert_letsencrypt_domain }}
+    --preferred-challenges http-01
+  become: true
+  args:
+    creates: "/etc/letsencrypt/live/{{ redirector_cert_letsencrypt_domain }}/fullchain.pem"
+  when: redirector_cert_source == "letsencrypt"
+  register: _redir_le_result
+
+- name: Letsencrypt - stage leaf cert + key for openresty
+  ansible.builtin.copy:
+    src: "/etc/letsencrypt/live/{{ redirector_cert_letsencrypt_domain }}/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - { src: "fullchain.pem", dest: "/etc/openresty/certs/redirector.crt", mode: "0644" }
+    - { src: "privkey.pem",   dest: "/etc/openresty/certs/redirector.key", mode: "0600" }
+  when: redirector_cert_source == "letsencrypt"
+  notify: reload openresty
+
+- name: Letsencrypt - install renewal deploy hook
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/redirector-openresty.sh
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      install -m 0644 -o root -g root \
+          "/etc/letsencrypt/live/{{ redirector_cert_letsencrypt_domain }}/fullchain.pem" \
+          /etc/openresty/certs/redirector.crt
+      install -m 0600 -o root -g root \
+          "/etc/letsencrypt/live/{{ redirector_cert_letsencrypt_domain }}/privkey.pem" \
+          /etc/openresty/certs/redirector.key
+      systemctl reload openresty || systemctl restart openresty
+  become: true
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - enable certbot renewal timer
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+  become: true
+  when: redirector_cert_source == "letsencrypt"
+
+- name: Letsencrypt - bring openresty back up now that cert is in place
+  ansible.builtin.systemd:
+    name: openresty
+    state: started
+    enabled: true
+  become: true
+  register: _redir_le_start
+  retries: 6
+  delay: 5
+  until: _redir_le_start is succeeded
+  when: redirector_cert_source == "letsencrypt"

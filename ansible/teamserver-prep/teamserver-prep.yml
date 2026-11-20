@@ -1,0 +1,365 @@
+---
+# conduit teamserver-prep: take a fresh VPS and put it in the state that
+# every downstream playbook (operator-bootstrap, ssh-lockdown) and every
+# conduit command expects.
+#
+# Runs FROM S1337 (controller). Targets the teamserver over SSH, over
+# clearnet for the first run (fresh VPS), over the WG overlay on re-runs
+# after ssh-lockdown has been applied.
+#
+# Idempotent. Re-runs produce zero `changed` once state is correct.
+#
+# Required variables (see group_vars/all.yml):
+#   teamserver_label              short unique tag for this engagement
+#   operator_key_path             where to generate the per-teamserver
+#                                 SSH key on S1337 (private stays local,
+#                                 pubkey is pushed to the teamserver)
+#   teamserver_conduit_src        where to expect the conduit source on
+#                                 the teamserver (operator rsyncs manually)
+#
+# Prerequisites:
+#   1. VPS exists. Operator knows its public IP and root password (or has
+#      already placed a key in root's authorized_keys).
+#   2. Operator has rsynced the conduit source to the teamserver at
+#      {{ teamserver_conduit_src }}:
+#          rsync -avz --delete \
+#            --exclude='.git' --exclude='*-venv' --exclude='*.egg-info' \
+#            ~/conduit/ root@<teamserver-ip>:/root/conduit/
+#   3. Ansible installed on S1337.
+#
+# Invocation (fresh VPS, root password still the default):
+#   cd conduit/ansible/teamserver-prep
+#   cp inventory.yml.example inventory.yml
+#   # edit inventory.yml: set the public IP and (optional) ansible_ssh_pass
+#   ansible-playbook -i inventory.yml teamserver-prep.yml -vvv \
+#     -e teamserver_label=contabo2026-11 -k
+#   # -k prompts for the ssh password. After the first run the per-teamserver
+#   # key is in root's authorized_keys, so subsequent runs are key-based.
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 1: generate the per-teamserver SSH key on the operator box
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Operator - generate per-teamserver SSH keypair on S1337
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Assert teamserver_label is set and non-trivial
+      ansible.builtin.assert:
+        that:
+          - teamserver_label is defined
+          - teamserver_label | length > 0
+          - teamserver_label != 'change-me'
+        fail_msg: >
+          Pass -e teamserver_label=<label> on the ansible-playbook command
+          line. One label per teamserver; each gets its own SSH key, scoped
+          to this engagement only.
+
+    - name: Ensure {{ operator_key_dir }} exists with strict perms
+      ansible.builtin.file:
+        path: "{{ operator_key_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Check whether the per-teamserver private key already exists
+      ansible.builtin.stat:
+        path: "{{ operator_key_path }}"
+      register: op_key_stat
+
+    - name: Generate ed25519 keypair for this teamserver (idempotent)
+      ansible.builtin.command:
+        argv:
+          - ssh-keygen
+          - "-t"
+          - "{{ operator_key_type }}"
+          - "-N"
+          - ""
+          - "-C"
+          - "{{ operator_key_comment }}"
+          - "-f"
+          - "{{ operator_key_path }}"
+      when: not op_key_stat.stat.exists
+      changed_when: true
+
+    - name: Lock private key perms
+      ansible.builtin.file:
+        path: "{{ operator_key_path }}"
+        mode: "0600"
+
+    - name: Lock public key perms
+      ansible.builtin.file:
+        path: "{{ operator_key_path }}.pub"
+        mode: "0644"
+
+    - name: Read the operator pubkey content for hand-off to the teamserver
+      ansible.builtin.slurp:
+        src: "{{ operator_key_path }}.pub"
+      register: op_pubkey_raw
+
+    - name: Expose the operator pubkey as a fact
+      ansible.builtin.set_fact:
+        operator_pubkey: "{{ op_pubkey_raw.content | b64decode | trim }}"
+
+    - name: Report keypair state
+      ansible.builtin.debug:
+        msg:
+          - "operator key private: {{ operator_key_path }}"
+          - "operator key public:  {{ operator_key_path }}.pub"
+          - "pubkey content (will be pushed to teamserver's authorized_keys):"
+          - "{{ operator_pubkey }}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Play 2: push the pubkey, install deps, prep /opt/conduit on teamserver
+# ─────────────────────────────────────────────────────────────────────
+
+- name: Teamserver - push operator key, install deps, prep /opt/conduit
+  hosts: teamserver
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Announce what we are about to touch
+      ansible.builtin.debug:
+        msg:
+          - "label:   {{ teamserver_label }}"
+          - "host:    {{ inventory_hostname }} ({{ ansible_host }})"
+          - "pubkey:  {{ hostvars['localhost']['operator_pubkey'] }}"
+
+  tasks:
+    # ── 2a: authorized_keys for root ──────────────────────────────────
+
+    - name: Ensure /root/.ssh exists with strict perms
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Add the per-teamserver operator pubkey to root/.ssh/authorized_keys
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ hostvars['localhost']['operator_pubkey'] }}"
+        state: present
+        exclusive: false
+        comment: "conduit-teamserver-{{ teamserver_label }}"
+
+    # ── 2b: apt packages (deps conduit + operator-bootstrap + ssh-lockdown need) ──
+
+    - name: apt update
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 600
+
+    - name: Install core teamserver packages
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+          - git
+          - rsync
+          - curl
+          - ca-certificates
+          - gnupg
+          - nftables
+          - tor
+          - torsocks
+          - wireguard
+          - wireguard-tools
+          - ansible
+        state: present
+
+    - name: Detect teamserver OS from gathered facts
+      ansible.builtin.set_fact:
+        # Match /etc/os-release's <ID>-<VERSION_ID>. Ubuntu's VERSION_ID keeps
+        # MAJOR.MINOR (24.04), so we use the full ansible_distribution_version.
+        # Debian's VERSION_ID is MAJOR only (13); the full version adds a point
+        # release (13.7) so we use ansible_distribution_major_version there.
+        detected_os: >-
+          {% if ansible_distribution == 'Ubuntu' -%}
+          ubuntu-{{ ansible_distribution_version }}
+          {%- elif ansible_distribution == 'Debian' -%}
+          debian-{{ ansible_distribution_major_version }}
+          {%- else -%}
+          {{ ansible_distribution | lower }}-{{ ansible_distribution_major_version }}
+          {%- endif %}
+
+    - name: Assert detected OS matches teamserver_os
+      ansible.builtin.assert:
+        that: detected_os == teamserver_os
+        fail_msg: >
+          Detected OS '{{ detected_os }}' does not match configured
+          teamserver_os '{{ teamserver_os }}'. Pass
+          -e teamserver_os={{ detected_os }} on the command line, or fix
+          the inventory to point at the right host.
+
+    - name: Install docker engine + compose plugin (per-OS package names)
+      ansible.builtin.apt:
+        name: "{{ docker_packages[teamserver_os] }}"
+        state: present
+
+    - name: Enable + start docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # ── 2c: conduit control-plane directories ────────────────────────
+
+    - name: Create /opt/conduit + subdirs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ conduit_root }}"
+        - "{{ conduit_ssh_ca_dir }}"
+        - "{{ conduit_nebula_certs }}"
+        - "{{ conduit_state_dir }}"
+
+    # ── 2d: SSH CA keypair (one-shot generation, kept forever) ──────
+
+    - name: Check whether the SSH CA private key already exists
+      ansible.builtin.stat:
+        path: "{{ conduit_ssh_ca_dir }}/ca"
+      register: ssh_ca_stat
+
+    - name: Generate ed25519 SSH CA keypair in /opt/conduit/ssh-ca/
+      ansible.builtin.command:
+        argv:
+          - ssh-keygen
+          - "-t"
+          - "ed25519"
+          - "-N"
+          - ""
+          - "-C"
+          - "conduit-ssh-ca"
+          - "-f"
+          - "{{ conduit_ssh_ca_dir }}/ca"
+      when: not ssh_ca_stat.stat.exists
+      changed_when: true
+
+    - name: Lock SSH CA private key perms
+      ansible.builtin.file:
+        path: "{{ conduit_ssh_ca_dir }}/ca"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Lock SSH CA public key perms
+      ansible.builtin.file:
+        path: "{{ conduit_ssh_ca_dir }}/ca.pub"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # ── 2e: tor hidden-service dir ownership (so conduit apply works) ──
+
+    - name: Ensure tor hidden-service directory exists (owned by debian-tor)
+      ansible.builtin.file:
+        path: "{{ tor_hs_dir }}"
+        state: directory
+        owner: debian-tor
+        group: debian-tor
+        mode: "0700"
+
+    # ── 2f: conduit source + venv install ────────────────────────────
+
+    - name: Optionally rsync conduit source from operator box
+      ansible.posix.synchronize:
+        src: "{{ operator_conduit_src | expanduser }}/"
+        dest: "{{ teamserver_conduit_src }}/"
+        delete: true
+        private_key: "{{ hostvars['teamserver'].ansible_ssh_private_key_file | expanduser }}"
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=*-venv"
+          - "--exclude=*.egg-info"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=examples/_private"
+          - "--exclude=aws/.terraform"
+          - "--exclude=aws/terraform.tfstate*"
+          - "--exclude=aws/terraform.tfvars"
+      delegate_to: localhost
+      become: false
+      when: rsync_conduit | bool
+
+    - name: Assert conduit source is present on the teamserver
+      ansible.builtin.stat:
+        path: "{{ teamserver_conduit_src }}/pyproject.toml"
+      register: conduit_src_stat
+
+    - name: Fail if conduit source is missing
+      ansible.builtin.fail:
+        msg: >
+          Conduit source not found at {{ teamserver_conduit_src }}. Rsync it
+          from the operator box first:
+            rsync -avz --delete \
+              --exclude='.git' --exclude='*-venv' --exclude='*.egg-info' \
+              {{ operator_conduit_src }}/ root@{{ ansible_host }}:{{ teamserver_conduit_src }}/
+          Or pass -e rsync_conduit=true and -e operator_conduit_src=/path/on/s1337.
+      when: not conduit_src_stat.stat.exists
+
+    - name: Create conduit Python venv
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-m"
+          - venv
+          - "{{ teamserver_conduit_venv }}"
+        creates: "{{ teamserver_conduit_venv }}/bin/python"
+
+    - name: pip install conduit editable (plus tui extras)
+      ansible.builtin.command:
+        argv:
+          - "{{ teamserver_conduit_venv }}/bin/pip"
+          - install
+          - "-e"
+          - "{{ teamserver_conduit_src }}[tui]"
+      register: pip_install
+      changed_when:
+        - "'Successfully installed' in pip_install.stdout or 'Successfully installed' in pip_install.stderr"
+
+    - name: Symlink /usr/local/bin/conduit -> venv entry point
+      ansible.builtin.file:
+        src: "{{ teamserver_conduit_venv }}/bin/conduit"
+        dest: /usr/local/bin/conduit
+        state: link
+        force: true
+
+    - name: Report conduit version
+      ansible.builtin.command: /usr/local/bin/conduit --version
+      register: conduit_version
+      changed_when: false
+
+    - name: Report conduit install state
+      ansible.builtin.debug:
+        msg:
+          - "conduit version: {{ conduit_version.stdout | trim }}"
+          - "source:  {{ teamserver_conduit_src }}"
+          - "venv:    {{ teamserver_conduit_venv }}"
+          - "ssh-ca:  {{ conduit_ssh_ca_dir }}/ca(.pub)"
+          - "tor hs:  {{ tor_hs_dir }} (owned by debian-tor)"
+
+    # ── 2g: final summary ────────────────────────────────────────────
+
+    - name: Final summary
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "Teamserver '{{ teamserver_label }}' is prep-complete."
+          - ""
+          - "Next: operator-bootstrap.yml (WG overlay + autossh)."
+          - "Then: ssh-lockdown.yml (firewall off public SSH)."
+          - "After both: ssh root@10.200.0.1 and run conduit apply."
+          - ""
+          - "Per-teamserver SSH key on S1337: {{ operator_key_path }}"
+          - "Point inventory.ansible_ssh_private_key_file at that file."

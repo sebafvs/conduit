@@ -1,0 +1,283 @@
+# Full-stack reference config. See examples/README.md for the operator playbook.
+
+meta:
+  name: full-stack
+  env: prod
+  operator_handle: operator
+
+install:
+  target: local
+  teamserver_os: ubuntu-24.04
+  root: /opt/adaptix
+  owner_user: root
+  adaptix_source: {url: https://github.com/sebafvs/AdaptixC2.git, ref: main}
+  extension_kit_source: {url: https://github.com/Adaptix-Framework/Extension-Kit.git, ref: main}
+
+teamserver:
+  publish_host: 127.0.0.1
+  publish_port: 4322
+  server_response_header: cloudflare
+  tls: {ref: strict_modern}
+
+operators:
+  - {name: operator, password: "secret://ops/operator", role: admin}
+
+pki:
+  ca:
+    source: generate
+    subject:
+      CN: Example Update CA
+      O: Example Networks, Inc
+      OU: Content Delivery Services
+      C: US
+    validity_days: 3650
+    key_size: 4096
+  leaves:
+    - name: cdn-le
+      source: letsencrypt
+      cn: cdn.example.com
+      letsencrypt:
+        domain: cdn.example.com
+        email: operator@example.com
+    - name: api-le
+      source: letsencrypt
+      cn: api.example.com
+      letsencrypt:
+        domain: api.example.com
+        email: operator@example.com
+
+payload: null
+
+listeners:
+  # One listener here needs one services[] entry under ts-onion for the compose
+  # port mapping and the hidden-service backend to stay in sync.
+  - name: cdn
+    type: beacon_http
+    bind_host: 0.0.0.0
+    bind_port: 8080
+    publish_host: 127.0.0.1
+    publish_port: 8080
+    tls_profile: null
+    preset: beacon_http_default
+  - name: api
+    type: beacon_http
+    bind_host: 0.0.0.0
+    bind_port: 9443
+    publish_host: 127.0.0.1
+    publish_port: 9443
+    tls_profile: null
+    preset: beacon_http_default
+
+redirectors:
+  - name: redir01
+    type: openresty-vps
+    deploy:
+      address: 198.51.100.10
+      ssh_user: ubuntu
+      ssh_key: ~/.ssh/redir01.pem
+    upstream:
+      teamserver_host: 127.0.0.1
+      teamserver_port: 8888
+      payload_host: ""
+      payload_port: 80
+    filters: {ref: filter_cdn}
+    tls_profile: cdn-le
+    nebula:
+      enabled: true
+      overlay_ip: "10.99.0.10/24"
+      groups: [redirector]
+      firewall_allow_ssh_groups: [relay, teamserver, operator]
+    payload_dir: /opt/payloads
+    health_url: "https://cdn.example.com/"
+    config:
+      fail2ban: {enabled: true, jails: [redir-decoy, redir-429]}
+      geoip: {enabled: false}
+      tcp_relays: []
+      tor_client:
+        enabled: true
+        # Points at the hidden service that fronts the cdn adaptix listener.
+        # `ts_onion_adaptix-cdn` is written by the teamserver stage once the
+        # tor hidden-service dir `/var/lib/tor/adaptix-cdn/` materializes.
+        onion_address: !state ts_onion_adaptix-cdn
+        onion_port: 80
+        gost_listen_port: 8888
+        gost_version: "3.3.1"
+        control_port: 9051
+        cookie_auth: true
+        install_nyx: true
+        upstream_tls: true
+
+  - name: redir02
+    type: openresty-vps
+    deploy:
+      address: 198.51.100.11
+      ssh_user: ubuntu
+      ssh_key: ~/.ssh/redir02.pem
+    upstream:
+      teamserver_host: 127.0.0.1
+      teamserver_port: 8888
+      payload_host: ""
+      payload_port: 80
+    filters: {ref: filter_api}
+    tls_profile: api-le
+    nebula:
+      enabled: true
+      overlay_ip: "10.99.0.11/24"
+      groups: [redirector]
+      firewall_allow_ssh_groups: [relay, teamserver, operator]
+    payload_dir: /opt/payloads
+    health_url: "https://api.example.com/"
+    config:
+      fail2ban: {enabled: true, jails: [redir-decoy, redir-429]}
+      geoip: {enabled: false}
+      tcp_relays: []
+      tor_client:
+        enabled: true
+        # Points at the hidden service that fronts the api adaptix listener.
+        # Separate onion from cdn's, same teamserver, different adaptix port.
+        onion_address: !state ts_onion_adaptix-api
+        onion_port: 80
+        gost_listen_port: 8888
+        gost_version: "3.3.1"
+        control_port: 9051
+        cookie_auth: true
+        install_nyx: true
+        upstream_tls: true
+
+  - name: ts-onion
+    type: tor-hidden-service
+    deploy:
+      address: 127.0.0.1
+      ssh_user: root
+      ssh_key: ~/.ssh/id_ed25519
+    upstream:
+      teamserver_host: 127.0.0.1
+      teamserver_port: 8080
+    config:
+      # Separate hs_dir per service keeps one burned onion from taking down
+      # the rest. Rotation replaces only the affected dir + keys.
+      services:
+        - name: adaptix-cdn
+          hs_dir: /var/lib/tor/adaptix-cdn
+          external_port: 80
+          backend_host: 127.0.0.1
+          backend_port: 8080
+        - name: adaptix-api
+          hs_dir: /var/lib/tor/adaptix-api
+          external_port: 80
+          backend_host: 127.0.0.1
+          backend_port: 9443
+
+relays:
+  - name: relay01
+    enabled: true
+    deploy:
+      address: 192.0.2.10
+      ssh_user: ubuntu
+      ssh_key: ~/.ssh/relay.pem
+      ssh_port: 22
+    nebula:
+      overlay_ip: "10.99.0.1/24"
+      groups: [relay]
+      is_lighthouse: true
+      listen_port: 4242
+      firewall_allow_ssh_groups: [relay, teamserver, operator]
+    ssh_ca_trust: true
+    packages: [tor, torsocks]
+
+management:
+  ssh_ca:
+    ca_dir: /opt/conduit/ssh-ca
+    default_principals: "ubuntu"
+    default_validity: "+8760h"
+  nebula:
+    enabled: true
+    version: "1.11.2"
+    overlay_network: "10.99.0.0/24"
+    ca_name: c2-relay-mesh
+    ca_validity_hours: 8760
+  monitoring:
+    health_check:
+      enabled: true
+      interval: "5m"
+      torsocks: true
+      connect_timeout: 10
+      max_time: 30
+    logpull:
+      enabled: true
+      interval: "30m"
+      ssh_key: /opt/conduit/logpull
+      ssh_user: ubuntu
+      torsocks: true
+      connect_timeout: 30
+      log_paths:
+        - /var/log/openresty/access.log
+        - /var/log/openresty/error.log
+        - /var/log/fail2ban.log
+      log_dir: /opt/conduit/logs
+    telegram:
+      enabled: false
+      token: "secret://monitoring/telegram_token"
+      chat_id: "TELEGRAM_CHAT_ID_HERE"
+  payload_distribution:
+    enabled: true
+    staging_dir: /opt/adaptix/payloads
+    via_relay: true
+  torsocks_management: true
+
+ingress:
+  mode: ssh-tunnel
+  document_only: true
+
+secrets:
+  backend: inline
+  generated: {password_length: 30, encryption_key_bytes: 32}
+
+profiles:
+  tls_profiles:
+    strict_modern:
+      min_version: TLS1.2
+      max_version: TLS1.3
+      cipher_suites:
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      prefer_server_cipher_suites: false
+
+  filter_profiles:
+    filter_cdn:
+      allow:
+        sni: [cdn.example.com]
+        host: [cdn.example.com]
+        uri: [/sync/update, /metrics/push, /payload]
+        ua: ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"]
+      require:
+        headers:
+          X-Cache-Tag: present
+      rate_limit: {rpm: 60, per: ip}
+      on_miss: decoy
+      decoy_url: https://en.wikipedia.org/wiki/Main_Page
+
+    filter_api:
+      allow:
+        sni: [api.example.com]
+        host: [api.example.com]
+        uri: [/sync/update, /metrics/push, /payload]
+        ua: ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"]
+      require:
+        headers:
+          X-Cache-Tag: present
+      rate_limit: {rpm: 60, per: ip}
+      on_miss: decoy
+      decoy_url: https://en.wikipedia.org/wiki/Main_Page
+
+  beacon_profiles:
+    beacon_http_default:
+      sleep: 4s
+      jitter: 20
+      uris: [/sync/update, /metrics/push, /payload]
+      user_agents: ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"]
+      host_headers: [cdn.example.com]
+      method: POST
+      heartbeat_header: X-Cache-Tag

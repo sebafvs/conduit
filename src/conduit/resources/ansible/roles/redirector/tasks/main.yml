@@ -1,0 +1,54 @@
+---
+
+- name: Base system + openresty repo
+  import_tasks: packages.yml
+  tags: [apt, base, packages]
+
+- name: Install openresty + support modules
+  import_tasks: openresty.yml
+  tags: [apt, openresty, install]
+
+- name: Lay down TLS certs (self-signed or letsencrypt)
+  import_tasks: certs.yml
+  tags: [cert, tls]
+
+- name: Deploy nginx config + Lua filter chain
+  import_tasks: config.yml
+  tags: [openresty, config, lua]
+
+- name: GeoIP2 database (MaxMind GeoLite2-Country)
+  import_tasks: geoip.yml
+  tags: [geoip]
+
+# OPSEC (CONDUIT-001): fail2ban removed from the edge pipeline. It requires
+# INFO-level sshd `Accepted`/auth-failed lines which `LogLevel ERROR` (see
+# ssh_ca.yml) deliberately silences, and it is redundant given nftables +
+# SSH CA + WG-only ingress. fail2ban.yml stays on disk as a parked role for
+# environments where someone wants it back; nothing imports it.
+
+- name: Enable + start openresty, confirm it serves
+  import_tasks: service.yml
+  tags: [openresty, service]
+
+- name: TCP relays (socat, for raw-TCP listeners)
+  import_tasks: tcp_relay.yml
+  tags: [tcp_relay, relays]
+
+- name: Tor client + gost relay (routes upstream through .onion)
+  import_tasks: tor_client.yml
+  when: redirector_tor_client_enabled
+  tags: [tor]
+
+- name: Host firewall (nftables)
+  import_tasks: firewall.yml
+  tags: [firewall, nftables]
+
+- name: Nebula mesh VPN
+  import_tasks: nebula.yml
+  when: redirector_nebula_enabled
+  tags: [nebula]
+
+- name: SSH Certificate Authority trust
+  import_tasks: ssh_ca.yml
+  when: redirector_ssh_ca_enabled
+  tags: [ssh_ca]

@@ -1,0 +1,134 @@
+---
+
+- name: Create /etc/ssh/ca directory
+  ansible.builtin.file:
+    path: /etc/ssh/ca
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Deploy SSH CA public key
+  ansible.builtin.copy:
+    content: "{{ redirector_ssh_ca_pubkey }}"
+    dest: /etc/ssh/ca/c2-ca.pub
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart sshd
+  when: redirector_ssh_ca_pubkey | length > 0
+
+- name: Configure TrustedUserCAKeys in sshd_config
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?TrustedUserCAKeys'
+    line: 'TrustedUserCAKeys /etc/ssh/ca/c2-ca.pub'
+    state: present
+  become: true
+  notify: restart sshd
+
+- name: Disable password authentication
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+    state: present
+  become: true
+  notify: restart sshd
+
+# OPSEC (CONDUIT-001): LogLevel ERROR drops INFO/NOTICE from sshd including
+# `Accepted publickey from <ip>`, which LogLevel QUIET does NOT suppress on
+# OpenSSH 9.x. SyslogFacility AUTHPRIV routes what's left to a facility the
+# downstream journal/syslog can filter or ignore cleanly. No fail2ban on
+# edge nodes any more (it requires the auth lines ERROR silences, and is
+# redundant behind nftables + SSH CA + WG-only ingress).
+- name: Deploy sshd OPSEC drop-in (LogLevel ERROR + AUTHPRIV)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/99-opsec.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by conduit redirector role. Do not hand-edit.
+      LogLevel ERROR
+      SyslogFacility AUTHPRIV
+  become: true
+  notify: restart sshd
+
+# OPSEC (CONDUIT-001): strip pam_lastlog so a successful login does not
+# write an entry to /var/log/lastlog (and does not emit the "Last login"
+# banner which otherwise leaks timing info to whoever just logged in).
+- name: Disable pam_lastlog in /etc/pam.d/sshd
+  ansible.builtin.replace:
+    path: /etc/pam.d/sshd
+    regexp: '^(session\s+optional\s+pam_lastlog\.so.*)$'
+    replace: '# \1   # OPSEC: disabled by conduit'
+  become: true
+
+# OPSEC (CONDUIT-001): symlink wtmp/btmp/lastlog to /dev/null. sshd + login
+# no-op on EACCES to these, so no error cascade. `last`, `lastb`, `lastlog`
+# show nothing afterwards.
+- name: Neutralize wtmp/btmp/lastlog via /dev/null symlinks
+  ansible.builtin.file:
+    src: /dev/null
+    dest: "{{ item }}"
+    state: link
+    force: true
+  loop:
+    - /var/log/wtmp
+    - /var/log/btmp
+    - /var/log/lastlog
+  become: true
+
+# OPSEC (CONDUIT-001): volatile journald storage. Journal lives in
+# /run/log/journal/ (tmpfs); a reboot wipes it. No persistent disk logs
+# to scrub. RuntimeMaxUse caps the tmpfs footprint.
+- name: Ensure /etc/systemd/journald.conf.d exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Deploy journald OPSEC drop-in (volatile + size cap, all forwarders off)
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/99-opsec.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by conduit redirector role. Do not hand-edit.
+      [Journal]
+      Storage=volatile
+      RuntimeMaxUse=50M
+      ForwardToSyslog=no
+      ForwardToKMsg=no
+      ForwardToWall=no
+      ForwardToConsole=no
+  become: true
+  notify: restart journald
+
+# OPSEC (CONDUIT-001): one-time wipe of the pre-existing persistent
+# /var/log/journal/ directory. `Storage=volatile` doesn't delete what was
+# already there, it just stops adding to it. After this task + the journald
+# restart, journald writes only to /run/log/journal/ (tmpfs, reboot-wiped).
+- name: Remove any pre-existing persistent journal dir
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: absent
+  become: true
+  notify: restart journald
+
+# OPSEC (CONDUIT-001): tear down fail2ban on nodes that had it from an
+# earlier apply. Idempotent: no-op if the unit was never there.
+- name: Stop + disable fail2ban if present (OPSEC removal)
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false

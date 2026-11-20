@@ -1,0 +1,65 @@
+---
+# Defaults for conduit teamserver-prep.
+# Override via `-e key=value` or host_vars.
+
+# ── Teamserver identity ──────────────────────────────────────────────
+
+# Short label used to namespace the per-teamserver SSH key on S1337 and
+# the Conduit install paths on the teamserver. Required at run time
+# (default is a placeholder that will fail the preflight).
+teamserver_label: "contabo"
+
+# ── Per-teamserver operator SSH key on S1337 ─────────────────────────
+
+# Path where the dedicated operator SSH key for THIS teamserver lives on
+# S1337. The playbook generates the key if missing and pushes the pubkey
+# to the teamserver's root authorized_keys. Each new teamserver gets its
+# own key so compromise of one engagement does not grant access to past
+# or future teamservers.
+operator_key_dir:      "{{ lookup('env', 'HOME') }}/.ssh"
+operator_key_path:     "{{ operator_key_dir }}/teamserver-{{ teamserver_label }}"
+operator_key_type:     "ed25519"
+operator_key_comment:  "conduit-teamserver-{{ teamserver_label }}"
+
+# ── Conduit source handling ──────────────────────────────────────────
+
+# Path on the TEAMSERVER where the conduit source tree should live.
+teamserver_conduit_src:    "/root/conduit"
+teamserver_conduit_venv:   "/root/conduit-venv"
+
+# Required: the playbook asserts conduit source already exists at
+# teamserver_conduit_src (operator rsyncs it manually before running,
+# per the agreed flow). To change this, set rsync_conduit=true and
+# provide operator_conduit_src.
+rsync_conduit:         false
+operator_conduit_src:  "{{ lookup('env', 'HOME') }}/conduit"
+
+# ── Conduit control-plane paths on the teamserver ────────────────────
+
+conduit_root:          "/opt/conduit"
+conduit_ssh_ca_dir:    "{{ conduit_root }}/ssh-ca"
+conduit_nebula_certs:  "{{ conduit_root }}/nebula-certs"
+conduit_state_dir:     "{{ conduit_root }}/state"
+
+# ── Tor hidden-service directory (owned by debian-tor) ───────────────
+
+tor_hs_dir:            "/var/lib/tor/adaptix"
+
+# ── Teamserver OS + per-OS package names ─────────────────────────────
+
+# Declared OS of the teamserver host. The playbook asserts that the
+# gathered facts match this value, so a misconfigured template fails
+# loud instead of landing on a broken package name. Override at run
+# time with -e teamserver_os=debian-13 if the inventory has a mix.
+teamserver_os:         "ubuntu-24.04"
+
+# docker-compose v2 is the same Go binary on both distros, but the apt
+# package name differs. Ubuntu 24.04 ships it as docker-compose-v2;
+# Debian 13 (trixie) ships it as plain docker-compose.
+docker_packages:
+  ubuntu-24.04:
+    - docker.io
+    - docker-compose-v2
+  debian-13:
+    - docker.io
+    - docker-compose

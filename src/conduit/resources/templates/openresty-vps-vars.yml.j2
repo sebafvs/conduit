@@ -1,0 +1,129 @@
+# Rendered by conduit from redirector "{{ r.name }}". Do not edit by hand.
+
+redirector_teamserver_host: "{{ r.upstream.teamserver_host }}"
+redirector_teamserver_port: {{ r.upstream.teamserver_port }}
+{% if r.upstream.payload_host %}
+redirector_payload_host:    "{{ r.upstream.payload_host }}"
+redirector_payload_port:    {{ r.upstream.payload_port }}
+{% endif %}
+
+{% if filt %}
+redirector_sni_allow:
+{% for s in filt.allow.sni %}
+  - "{{ s }}"
+{% endfor %}
+
+redirector_uri_allow:
+{% for u in filt.allow.uri %}
+  - "{{ u }}"
+{% endfor %}
+
+{% if filt.allow.ua %}
+redirector_ua_allow: "{{ filt.allow.ua[0] }}"
+{% endif %}
+
+redirector_require_headers:
+{% for hdr_name, hdr_check in filt.require.headers.items() %}
+{% if hdr_check == 'present' %}
+  - { name: "{{ hdr_name }}", check: "present" }
+{% else %}
+  - { name: "{{ hdr_name }}", check: "exact", value: "{{ hdr_check }}" }
+{% endif %}
+{% endfor %}
+{% if filt.require.challenge %}
+  - { name: "{{ filt.require.challenge.name }}", check: "exact", value: "{{ filt.require.challenge.secret_ref }}" }
+{% endif %}
+
+redirector_rate_limit_rpm: {{ filt.rate_limit.rpm }}
+
+redirector_geo_allow:
+{% for g in filt.allow.geo %}
+  - "{{ g }}"
+{% endfor %}
+
+redirector_decoy_url: "{{ filt.decoy_url }}"
+{% endif %}
+
+redirector_cert_source: "{{ 'self-signed' if (not leaf or leaf.source.value == 'ca-signed') else leaf.source.value }}"
+{% if leaf %}
+redirector_cert_cn: "{{ leaf.cn }}"
+redirector_cert_days: {{ leaf.validity_days }}
+{% if leaf.source.value == 'letsencrypt' and leaf.letsencrypt %}
+redirector_cert_letsencrypt_domain: "{{ leaf.letsencrypt.domain }}"
+redirector_cert_letsencrypt_email:  "{{ leaf.letsencrypt.email }}"
+{% endif %}
+{% endif %}
+
+redirector_geoip_enabled: {{ cfg.geoip.enabled | string | lower }}
+{% if cfg.geoip.license_ref %}
+redirector_geoip_license: "{{ cfg.geoip.license_ref }}"
+{% endif %}
+
+redirector_tcp_relays:
+{% for relay in cfg.tcp_relays %}
+  - name: {{ relay.name }}
+    listen_port: {{ relay.listen_port }}
+    target: "{{ relay.target }}"
+{% endfor %}
+
+# Tor client
+redirector_tor_client_enabled: {{ cfg.tor_client.enabled | string | lower }}
+{% if cfg.tor_client.enabled %}
+redirector_tor_client_onion_address: "{{ cfg.tor_client.onion_address }}"
+redirector_tor_client_onion_port: {{ cfg.tor_client.onion_port }}
+redirector_tor_client_gost_listen_port: {{ cfg.tor_client.gost_listen_port }}
+redirector_tor_client_gost_version: "{{ cfg.tor_client.gost_version }}"
+redirector_tor_client_control_port: {{ cfg.tor_client.control_port }}
+redirector_tor_client_cookie_auth: {{ cfg.tor_client.cookie_auth | string | lower }}
+redirector_tor_client_install_nyx: {{ cfg.tor_client.install_nyx | string | lower }}
+redirector_tor_client_upstream_tls: {{ cfg.tor_client.upstream_tls | string | lower }}
+{% endif %}
+
+# Fail2ban + nftables fine-grained options
+redirector_fail2ban_enabled: {{ cfg.fail2ban.enabled | string | lower }}
+redirector_fail2ban_jails:
+{% for j in cfg.fail2ban.jails %}
+  - {{ j }}
+{% endfor %}
+redirector_fail2ban_ban_time: "{{ cfg.fail2ban.ban_time }}"
+redirector_fail2ban_max_retry: {{ cfg.fail2ban.max_retry }}
+
+redirector_nftables_enabled: {{ cfg.nftables.enabled | string | lower }}
+redirector_nftables_input_policy: "{{ cfg.nftables.input_policy.value }}"
+
+# Nebula mesh VPN
+redirector_nebula_enabled: {{ r.nebula.enabled | string | lower }}
+{% if r.nebula.enabled %}
+redirector_nebula_version: "{{ nebula_version }}"
+redirector_nebula_overlay_ip: "{{ r.nebula.overlay_ip }}"
+redirector_nebula_groups:
+{% for g in r.nebula.groups %}
+  - {{ g }}
+{% endfor %}
+redirector_nebula_firewall_allow_ssh_groups:
+{% for g in r.nebula.firewall_allow_ssh_groups %}
+  - {{ g }}
+{% endfor %}
+redirector_nebula_listen_port: 4242
+redirector_nebula_static_hosts:
+{% for lh in lighthouses %}
+  - nebula_ip: "{{ lh.nebula_ip }}"
+    public_addr: "{{ lh.public_addr }}"
+{% endfor %}
+redirector_nebula_lighthouse_hosts:
+{% for lh in lighthouses %}
+  - "{{ lh.nebula_ip }}"
+{% endfor %}
+{% if nebula_certs.ca_cert %}
+redirector_nebula_ca_cert: "{{ nebula_certs.ca_cert }}"
+redirector_nebula_host_cert: "{{ nebula_certs.host_cert }}"
+redirector_nebula_host_key: "{{ nebula_certs.host_key }}"
+{% endif %}
+{% endif %}
+
+# SSH CA trust
+redirector_ssh_ca_enabled: {{ (r.nebula.enabled) | string | lower }}
+{% if ssh_ca_pubkey %}
+redirector_ssh_ca_pubkey: |
+  {{ ssh_ca_pubkey }}
+{% endif %}

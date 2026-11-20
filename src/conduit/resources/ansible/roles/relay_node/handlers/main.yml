@@ -1,0 +1,27 @@
+---
+
+- name: reload systemd
+  ansible.builtin.command: systemctl daemon-reload
+  become: true
+  changed_when: true
+
+- name: restart nebula
+  ansible.builtin.command: systemctl restart nebula
+  become: true
+  changed_when: true
+
+- name: reload nftables
+  ansible.builtin.command: nft -f /etc/nftables.conf
+  become: true
+  changed_when: true
+
+- name: restart sshd
+  ansible.builtin.shell: systemctl restart sshd || systemctl restart ssh
+  become: true
+  changed_when: true
+
+- name: restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  become: true

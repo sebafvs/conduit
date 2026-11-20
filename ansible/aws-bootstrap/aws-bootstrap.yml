@@ -1,0 +1,198 @@
+---
+# Install awscli v2 + terraform and write ~/.aws credentials on the teamserver.
+# Idempotent. Run from the teamserver itself (localhost + ansible_connection=local).
+#
+# Required env vars (read via lookup('env', ...)):
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#
+# Optional env vars (defaults in vars below):
+#   AWS_REGION          default eu-north-1
+#   AWS_OUTPUT_FORMAT   default json
+#   AWS_PROFILE         default default
+#
+# Invocation:
+#   AWS_ACCESS_KEY_ID='AKIA...' AWS_SECRET_ACCESS_KEY='...' AWS_REGION='eu-north-1' \
+#     ansible-playbook -i inventory.yml aws-bootstrap.yml -vvv
+
+- name: Bootstrap AWS tooling + credentials on the teamserver
+  hosts: localhost
+  gather_facts: true
+  become: true
+
+  vars:
+    aws_access_key_id:   "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+    aws_secret_access_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+    aws_region:          "{{ lookup('env', 'AWS_REGION')        | default('eu-north-1', true) }}"
+    aws_output_format:   "{{ lookup('env', 'AWS_OUTPUT_FORMAT') | default('json', true) }}"
+    aws_profile:         "{{ lookup('env', 'AWS_PROFILE')       | default('default', true) }}"
+
+    aws_config_user: root
+    aws_home_dir:    /root
+    aws_dir:         "{{ aws_home_dir }}/.aws"
+
+    awscli_installer_url: "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+    awscli_install_dir:   /usr/local/aws-cli
+    awscli_binary_path:   /usr/local/bin/aws
+
+    terraform_apt_key_url:  "https://apt.releases.hashicorp.com/gpg"
+    terraform_apt_keyring:  /usr/share/keyrings/hashicorp-archive-keyring.gpg
+    # HashiCorp only publishes repos for upstream Debian/Ubuntu codenames.
+    # Debian derivatives (Parrot, Kali, Linux Mint) have their own release
+    # codenames that HashiCorp does not host, so remap by distribution name
+    # to a known-good upstream codename.
+    _terraform_codename_by_distribution:
+      Parrot: bookworm       # Parrot 7+ is Debian 12 (bookworm) based
+      Kali: bookworm         # Kali is Debian testing-ish, bookworm works
+      Linuxmint: jammy       # Linux Mint 21.x is Ubuntu 22.04 based
+    terraform_apt_codename: >-
+      {{ _terraform_codename_by_distribution[ansible_distribution]
+         | default(ansible_distribution_release) }}
+    terraform_apt_repo:     "deb [arch=amd64 signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ terraform_apt_codename }} main"
+    terraform_binary_path:  /usr/bin/terraform
+
+  pre_tasks:
+    - name: Preflight, credentials present in environment
+      ansible.builtin.assert:
+        that:
+          - aws_access_key_id | length > 0
+          - aws_secret_access_key | length > 0
+        fail_msg: "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars before invoking this playbook."
+
+  tasks:
+    # ── awscli v2 ──────────────────────────────────────────────────────
+    - name: Check if awscli v2 is already installed
+      ansible.builtin.stat:
+        path: "{{ awscli_binary_path }}"
+      register: awscli_stat
+
+    - name: Install awscli v2 prerequisites
+      ansible.builtin.apt:
+        name:
+          - unzip
+          - curl
+        state: present
+        update_cache: true
+      when: not awscli_stat.stat.exists
+
+    - name: Download awscli v2 installer bundle
+      ansible.builtin.get_url:
+        url: "{{ awscli_installer_url }}"
+        dest: /tmp/awscliv2.zip
+        mode: "0644"
+      when: not awscli_stat.stat.exists
+
+    - name: Unpack awscli v2 installer
+      ansible.builtin.unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp/
+        remote_src: true
+      when: not awscli_stat.stat.exists
+
+    - name: Run the awscli v2 installer
+      ansible.builtin.command:
+        cmd: /tmp/aws/install
+        creates: "{{ awscli_binary_path }}"
+      when: not awscli_stat.stat.exists
+
+    - name: Clean up awscli installer artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/awscliv2.zip
+        - /tmp/aws
+      when: not awscli_stat.stat.exists
+
+    - name: Report awscli version
+      ansible.builtin.command: "{{ awscli_binary_path }} --version"
+      register: awscli_version
+      changed_when: false
+
+    # ── terraform ───────────────────────────────────────────────────────
+    - name: Install terraform prerequisites
+      ansible.builtin.apt:
+        name:
+          - gnupg
+          - lsb-release
+          - ca-certificates
+        state: present
+        update_cache: true
+
+    - name: Fetch HashiCorp apt GPG key
+      ansible.builtin.get_url:
+        url: "{{ terraform_apt_key_url }}"
+        dest: /tmp/hashicorp.key
+        mode: "0644"
+
+    - name: Dearmor HashiCorp key into trusted keyring
+      ansible.builtin.command:
+        cmd: "gpg --batch --yes --dearmor --output {{ terraform_apt_keyring }} /tmp/hashicorp.key"
+        creates: "{{ terraform_apt_keyring }}"
+
+    - name: Register HashiCorp apt repository
+      ansible.builtin.apt_repository:
+        repo: "{{ terraform_apt_repo }}"
+        filename: hashicorp
+        state: present
+        update_cache: true
+
+    - name: Install terraform
+      ansible.builtin.apt:
+        name: terraform
+        state: present
+
+    - name: Report terraform version
+      ansible.builtin.command: "{{ terraform_binary_path }} -version"
+      register: terraform_version
+      changed_when: false
+
+    # ── AWS credentials + config ────────────────────────────────────────
+    - name: Ensure ~/.aws exists
+      ansible.builtin.file:
+        path: "{{ aws_dir }}"
+        state: directory
+        owner: "{{ aws_config_user }}"
+        group: "{{ aws_config_user }}"
+        mode: "0700"
+
+    - name: Render ~/.aws/credentials
+      ansible.builtin.template:
+        src: credentials.j2
+        dest: "{{ aws_dir }}/credentials"
+        owner: "{{ aws_config_user }}"
+        group: "{{ aws_config_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Render ~/.aws/config
+      ansible.builtin.template:
+        src: config.j2
+        dest: "{{ aws_dir }}/config"
+        owner: "{{ aws_config_user }}"
+        group: "{{ aws_config_user }}"
+        mode: "0600"
+
+    # ── verify ──────────────────────────────────────────────────────────
+    - name: Verify credentials with aws sts get-caller-identity
+      ansible.builtin.command: "{{ awscli_binary_path }} sts get-caller-identity"
+      register: sts_result
+      changed_when: false
+      environment:
+        AWS_PROFILE: "{{ aws_profile }}"
+        HOME: "{{ aws_home_dir }}"
+
+    - name: Assert caller identity has an ARN
+      ansible.builtin.assert:
+        that:
+          - '"Arn" in sts_result.stdout'
+          - '"UserId" in sts_result.stdout'
+        fail_msg: "aws sts get-caller-identity did not return a valid identity."
+
+    - name: Print final summary
+      ansible.builtin.debug:
+        msg:
+          - "awscli:    {{ awscli_version.stdout }}"
+          - "terraform: {{ terraform_version.stdout_lines[0] }}"
+          - "aws dir:   {{ aws_dir }} (profile {{ aws_profile }}, region {{ aws_region }})"
+          - "sts:       {{ sts_result.stdout }}"

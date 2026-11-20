@@ -1,0 +1,10 @@
+---
+# Copy to inventory.yml and run. OnionShare is always installed locally on
+# the host running ansible, so this is a single-host inventory targeting
+# localhost. No remote SSH needed.
+
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

@@ -1,0 +1,138 @@
+---
+# conduit operator-bootstrap: lock teamserver SSH to the WG CIDR only.
+#
+# Separate from operator-bootstrap.yml ON PURPOSE. Blast radius is different:
+# if the nftables apply ejects your SSH session, you only get back in via
+# cloud-provider console OR the auto-revert timer (5 min).
+#
+# Prerequisites:
+#   1. operator-bootstrap.yml must have been run successfully.
+#   2. You must be connecting to the teamserver via the WG overlay IP
+#      (otherwise your current SSH is from the public IP and gets DROPPED
+#      the moment the policy flips).
+#
+# Safety net:
+#   Before applying, a systemd-run one-shot is scheduled to `nft flush
+#   ruleset` in 5 min. If anything goes wrong and you lose connectivity,
+#   the firewall self-reverts and SSH opens back up. The playbook cancels
+#   the timer at the end on success.
+#
+# Invocation:
+#   # IMPORTANT: inventory must point at the WG IP, not the public IP
+#   ansible-playbook -i inventory.yml ssh-lockdown.yml -vvv
+#
+# Dry run first:
+#   ansible-playbook -i inventory.yml ssh-lockdown.yml --check --diff
+
+- name: Teamserver - lock SSH to WG overlay via nftables
+  hosts: teamserver
+  become: true
+  gather_facts: false
+
+  vars_prompt:
+    - name: confirm
+      prompt: >-
+        This will set nftables input policy to DROP with allow rules only for:
+          - loopback
+          - established/related
+          - UDP {{ wg_listen_port | default(49821) }}  (WireGuard)
+          - TCP 22 from {{ wg_cidr | default('10.200.0.0/24') }}  (SSH via WG)
+          - ICMP echo-request
+        Your current SSH session must be from an IP inside the WG CIDR above.
+        A 5-minute auto-revert timer will fire if the playbook does not cancel
+        it. Type "yes" to proceed
+      private: false
+
+  pre_tasks:
+    - name: Abort unless operator confirmed
+      ansible.builtin.fail:
+        msg: "Aborted. Confirm was '{{ confirm }}', expected 'yes'."
+      when: confirm != 'yes'
+
+    - name: Assert WG CIDR is sane
+      ansible.builtin.assert:
+        that:
+          - wg_cidr is defined
+          - wg_listen_port is defined
+        fail_msg: "wg_cidr and wg_listen_port must be set (see group_vars/all.yml)"
+
+    - name: Assert nftables is installed on teamserver
+      ansible.builtin.command: which nft
+      register: nft_which
+      changed_when: false
+      failed_when: nft_which.rc != 0
+
+  tasks:
+    - name: Arm the 5-minute auto-revert safety net
+      ansible.builtin.command: >
+        systemd-run --unit=fw-safety --on-active=5min
+          bash -c "nft flush ruleset"
+      register: fw_safety_arm
+      changed_when: true
+
+    - name: Confirm safety net is scheduled
+      ansible.builtin.command: systemctl list-timers fw-safety.timer --no-pager
+      register: fw_safety_timers
+      changed_when: false
+
+    - name: Report safety net arm
+      ansible.builtin.debug:
+        msg:
+          - "safety net armed: nft flush ruleset in 5 min if we don't cancel"
+          - "{{ fw_safety_timers.stdout_lines }}"
+
+    - name: Render /etc/nftables.conf (host-managed rules only)
+      ansible.builtin.template:
+        src: templates/nftables.conf.j2
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Syntax-check /etc/nftables.conf before applying
+      ansible.builtin.command: nft -c -f /etc/nftables.conf
+      changed_when: false
+
+    - name: Apply /etc/nftables.conf (the moment of truth)
+      ansible.builtin.command: nft -f /etc/nftables.conf
+      register: nft_apply
+      changed_when: true
+
+    - name: Wait for ansible SSH connection to still be alive after apply
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+
+    - name: Verify input chain policy is drop and rules are present
+      ansible.builtin.command: nft list chain inet filter input
+      register: nft_input_chain
+      changed_when: false
+
+    - name: Report resulting firewall state
+      ansible.builtin.debug:
+        msg: "{{ nft_input_chain.stdout_lines }}"
+
+    - name: Assert policy is drop
+      ansible.builtin.assert:
+        that:
+          - "'policy drop' in nft_input_chain.stdout"
+        fail_msg: "nftables did not flip to policy drop; refusing to persist"
+
+    - name: Enable + start nftables.service (loads /etc/nftables.conf on boot)
+      ansible.builtin.systemd:
+        name: nftables
+        enabled: true
+        state: started
+
+    - name: Cancel the safety-net timer now that we're proven alive
+      # Stopping the timer prevents the one-shot service from ever being
+      # invoked, so there is no separate service unit to stop afterwards.
+      ansible.builtin.systemd:
+        name: fw-safety.timer
+        state: stopped
+
+    - name: Final summary
+      ansible.builtin.debug:
+        msg:
+          - "Public SSH on teamserver is now dropped. SSH only via WG {{ wg_cidr }}."
+          - "Ruleset persisted in /etc/nftables.conf and loaded by nftables.service on boot."
+          - "Validate from the operator box: with WG DOWN, 'ssh root@<teamserver-public-ip>' should time out."

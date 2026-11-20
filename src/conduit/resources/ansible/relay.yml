@@ -1,0 +1,7 @@
+---
+
+- name: Configure relay node
+  hosts: relay
+  gather_facts: true
+  roles:
+    - relay_node

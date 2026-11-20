@@ -1,0 +1,22 @@
+# Managed by conduit operator-bootstrap. Do not hand-edit.
+[Unit]
+Description=Adaptix client SSH tunnel to teamserver via WireGuard
+After=network-online.target wg-quick@conduit.service
+Wants=network-online.target wg-quick@conduit.service
+
+[Service]
+Type=simple
+User={{ operator_user }}
+Environment=AUTOSSH_GATETIME=0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=accept-new \
+  -i {{ operator_ssh_key_expanded }} \
+  -L {{ adaptix_forward_port }}:127.0.0.1:{{ adaptix_remote_port }} {{ teamserver_ssh_user }}@{{ wg_teamserver_ip }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

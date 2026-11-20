@@ -1,0 +1,37 @@
+---
+
+- name: Flush pending handlers (make sure openresty reload fires before we probe)
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable + start openresty
+  ansible.builtin.systemd:
+    name: openresty
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Enable + start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+  become: true
+
+- name: Confirm openresty answers on :443 locally
+  ansible.builtin.uri:
+    url: "https://127.0.0.1/"
+    validate_certs: false
+    status_code: [301, 302, 200, 400]
+  retries: 5
+  delay: 2
+  register: redir_local_probe
+  until: redir_local_probe.status is defined
+
+- name: Report service status
+  ansible.builtin.debug:
+    msg: >-
+      Redirector up. openresty + fail2ban running.
+      Local 443 probe status: {{ redir_local_probe.status }}.
+      Decoy via https://127.0.0.1/anything, real path needs matching
+      UA + required-headers filter.

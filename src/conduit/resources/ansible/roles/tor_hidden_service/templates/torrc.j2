@@ -1,0 +1,23 @@
+# Managed by conduit. Do not edit by hand.
+
+SocksPort {{ tor_hs_socks_port }}
+Log notice syslog
+
+{% for svc in tor_hs_services %}
+HiddenServiceDir {{ svc.hs_dir }}
+HiddenServiceVersion {{ svc.version | default(3) }}
+HiddenServicePort {{ svc.external_port }} {{ svc.backend_host }}:{{ svc.backend_port }}
+{% for pk in svc.client_auth_pubkeys | default([]) %}
+HiddenServiceAuthorizeClient stealth {{ pk }}
+{% endfor %}
+
+{% endfor %}
+{% if tor_hs_use_bridges %}
+UseBridges 1
+{% endif %}
+{% if tor_hs_pluggable_transport != "none" %}
+ClientTransportPlugin {{ tor_hs_pluggable_transport }} exec /usr/bin/obfs4proxy
+{% endif %}
+{% for line in tor_hs_authority_lines | default([]) %}
+{{ line }}
+{% endfor %}

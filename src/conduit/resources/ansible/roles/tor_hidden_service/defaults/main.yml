@@ -1,0 +1,9 @@
+---
+
+tor_hs_name: "tor-hs"
+tor_hs_tor_version: "0.4.9"
+tor_hs_socks_port: 0
+tor_hs_use_bridges: false
+tor_hs_pluggable_transport: "none"
+tor_hs_services: []
+tor_hs_authority_lines: []

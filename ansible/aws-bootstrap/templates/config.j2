@@ -1,0 +1,4 @@
+# Managed by conduit aws-bootstrap. Do not hand-edit.
+[{{ 'default' if aws_profile == 'default' else 'profile ' + aws_profile }}]
+region = {{ aws_region }}
+output = {{ aws_output_format }}

@@ -1,0 +1,22 @@
+---
+# Copy to inventory.yml (gitignored) and fill in the placeholder.
+#
+# Two phases of life for this file:
+#
+# 1) FIRST RUN (fresh VPS, before operator-bootstrap + ssh-lockdown):
+#      ansible_host: <teamserver public IP>
+#      ansible_ssh_pass: ...  (OR pass -k to ansible-playbook for password auth)
+#    Public SSH is still open; the operator-provisioned SSH key may not be in
+#    place yet. Password auth is expected for the very first connection.
+#
+# 2) RE-RUN (teamserver has been WG-locked down):
+#      ansible_host: 10.200.0.1
+#    Operator's per-teamserver key is in root's authorized_keys; key auth works.
+
+all:
+  hosts:
+    teamserver:
+      ansible_host: TEAMSERVER_PUBLIC_IP
+      ansible_user: root
+      ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+      # ansible_ssh_private_key_file: ~/.ssh/teamserver-<label>   # populated after keygen

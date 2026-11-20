@@ -1,0 +1,115 @@
+---
+
+- name: Copy nginx.conf from bundle
+  ansible.builtin.copy:
+    src: "{{ redirector_bundle_path }}/openresty/nginx.conf"
+    dest: /etc/openresty/nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Copy conf.d/redirector.conf from bundle
+  ansible.builtin.copy:
+    src: "{{ redirector_bundle_path }}/openresty/conf.d/redirector.conf"
+    dest: /etc/openresty/conf.d/redirector.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Copy Lua scripts from bundle
+  ansible.builtin.copy:
+    src: "{{ redirector_bundle_path }}/lua/{{ item }}"
+    dest: "/etc/openresty/lua/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  loop:
+    - load-lists.lua
+    - filter.lua
+  notify: reload openresty
+
+- name: Render SNI allowlist from role var
+  ansible.builtin.copy:
+    content: "{{ redirector_sni_allow | join('\n') }}\n"
+    dest: /etc/openresty/data/sni-allow.txt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Render URI allowlist from role var
+  ansible.builtin.copy:
+    content: "{{ redirector_uri_allow | join('\n') }}\n"
+    dest: /etc/openresty/data/uri-allow.txt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Render UA allowlist from role var
+  ansible.builtin.copy:
+    content: "{{ redirector_ua_allow }}\n"
+    dest: /etc/openresty/data/ua-allow.txt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Copy JA3 allowlist from bundle (empty by default)
+  ansible.builtin.copy:
+    src: "{{ redirector_bundle_path }}/data/ja3-allow.txt"
+    dest: /etc/openresty/data/ja3-allow.txt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Render required-headers list
+  ansible.builtin.copy:
+    content: |
+      # Rendered by conduit redirector role. Do not edit by hand.
+      {% for h in redirector_require_headers %}
+      {% if h.check == 'present' %}
+      {{ h.name }}:present
+      {% else %}
+      {{ h.name }}:{{ h.value }}
+      {% endif %}
+      {% endfor %}
+    dest: /etc/openresty/data/headers-require.txt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: reload openresty
+
+- name: Substitute placeholders in deployed configs
+  ansible.builtin.replace:
+    path: "{{ item.0 }}"
+    regexp: "{{ item.1.pattern }}"
+    replace: "{{ item.1.value }}"
+  become: true
+  loop: "{{ _redir_config_files | product(_redir_subs) | list }}"
+  vars:
+    _redir_config_files:
+      - /etc/openresty/conf.d/redirector.conf
+      - /etc/openresty/lua/filter.lua
+    _redir_subs:
+      - { pattern: "__TEAMSERVER_HOST__",   value: "{{ redirector_teamserver_host }}" }
+      - { pattern: "__TEAMSERVER_PORT__",   value: "{{ redirector_teamserver_port | string }}" }
+      - { pattern: "__REDIRECTOR_DOMAIN__",  value: "{{ redirector_sni_allow[0] }}" }
+      - { pattern: "__DECOY_URL__",         value: "{{ redirector_decoy_url }}" }
+  notify: reload openresty
+
+- name: Validate nginx config syntax
+  ansible.builtin.command: /usr/local/openresty/bin/openresty -t -c /etc/openresty/nginx.conf
+  become: true
+  changed_when: false

@@ -1,0 +1,72 @@
+---
+
+redirector_teamserver_host: "127.0.0.1"
+redirector_teamserver_port: 8443
+redirector_payload_host: "127.0.0.1"
+redirector_payload_port: 443
+
+redirector_sni_allow:
+  - "cdn-sync.net"
+
+redirector_uri_allow:
+  - "/sync/update"
+
+redirector_ua_allow: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+redirector_require_headers: []
+
+redirector_challenge_header: ""
+redirector_challenge_secret: ""
+
+redirector_rate_limit_rpm: 60
+
+redirector_geo_allow: []
+
+redirector_cert_source: "self-signed"
+redirector_cert_letsencrypt_domain: ""
+redirector_cert_letsencrypt_email: ""
+redirector_decoy_url: "https://en.wikipedia.org/wiki/Main_Page"
+
+redirector_bundle_path: "{{ role_path }}/../../../redirector"
+
+redirector_cert_cn: "{{ redirector_sni_allow[0] }}"
+redirector_cert_org: "cdn-sync"
+redirector_cert_days: 365
+
+redirector_ca_dir: "{{ playbook_dir }}/ca/cdn-sync"
+redirector_ca_cert: "{{ redirector_ca_dir }}/ca.crt"
+redirector_ca_key: "{{ redirector_ca_dir }}/ca.key"
+
+redirector_geoip_enabled: false
+redirector_geoip_license: ""
+
+redirector_tcp_relays: []
+
+redirector_tor_client_enabled: false
+redirector_tor_client_onion_address: ""
+redirector_tor_client_onion_port: 80
+redirector_tor_client_gost_listen_port: 8888
+redirector_tor_client_gost_version: "3.3.1"
+redirector_tor_client_control_port: 9051
+redirector_tor_client_cookie_auth: true
+redirector_tor_client_install_nyx: true
+redirector_tor_client_upstream_tls: true
+
+redirector_nebula_enabled: false
+redirector_nebula_version: "1.11.2"
+redirector_nebula_overlay_ip: ""
+redirector_nebula_groups:
+  - redirector
+redirector_nebula_firewall_allow_ssh_groups:
+  - relay
+  - teamserver
+  - operator
+redirector_nebula_listen_port: 4242
+redirector_nebula_static_hosts: []
+redirector_nebula_lighthouse_hosts: []
+redirector_nebula_ca_cert: ""
+redirector_nebula_host_cert: ""
+redirector_nebula_host_key: ""
+
+redirector_ssh_ca_enabled: false
+redirector_ssh_ca_pubkey: ""

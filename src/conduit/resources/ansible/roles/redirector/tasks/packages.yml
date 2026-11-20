@@ -1,0 +1,46 @@
+---
+
+- name: Install prereq packages (apt transport + GPG tools)
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg2
+      - lsb-release
+      - curl
+    state: present
+    update_cache: true
+  become: true
+
+- name: Add OpenResty apt signing key
+  ansible.builtin.get_url:
+    url: https://openresty.org/package/pubkey.gpg
+    dest: /etc/apt/keyrings/openresty.gpg.asc
+    mode: "0644"
+  become: true
+
+- name: Add OpenResty apt repo (Debian bookworm)
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/openresty.gpg.asc] http://openresty.org/package/debian bookworm openresty"
+    filename: openresty
+    state: present
+    update_cache: true
+  become: true
+
+- name: Install OpenResty + supporting modules + hardening tools
+  ansible.builtin.apt:
+    name:
+      - openresty
+      - openresty-opm
+      - lua5.1
+      - fail2ban
+      - nftables
+      - python3-nftables
+    state: present
+  become: true
+
+- name: Install lua-resty-maxminddb via opm
+  ansible.builtin.command: /usr/local/openresty/bin/opm get anjia0532/lua-resty-maxminddb
+  become: true
+  args:
+    creates: /usr/local/openresty/site/lualib/resty/maxminddb.lua
+  when: redirector_geoip_enabled | bool

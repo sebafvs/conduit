@@ -1,0 +1,46 @@
+---
+# Defaults for conduit operator bootstrap.
+# Override any of these via `ansible-playbook -e key=value` or inventory host_vars.
+
+# ── WireGuard overlay ────────────────────────────────────────────────
+
+# CIDR for the operator<->teamserver overlay. Must not overlap with the Nebula
+# C2 mesh (10.99.0.0/24 by default).
+wg_cidr:               "10.200.0.0/24"
+wg_cidr_prefix:        "24"
+
+# Overlay IPs assigned to each side.
+wg_teamserver_ip:      "10.200.0.1"
+wg_operator_ip:        "10.200.0.2"
+
+# UDP port the teamserver binds. Pick something non-default (default WG port
+# is 51820 and gets scanned constantly). 49821 is a random high-port value.
+wg_listen_port:        49821
+wg_persistent_keepalive: 25
+
+# ── Teamserver access (required at runtime) ──────────────────────────
+
+# Public IP the operator reaches the teamserver on. Resolved from the
+# teamserver host entry in inventory (NOT from ansible_host of the current
+# play, which is 'localhost' during the operator-side plays and would
+# render the WG Endpoint as "localhost:port"). Override on the command
+# line with -e teamserver_public_ip=1.2.3.4 if needed.
+teamserver_public_ip:  "{{ hostvars['teamserver'].ansible_host }}"
+teamserver_ssh_user:   "{{ ansible_user | default('root') }}"
+
+# ── Operator (S1337) side ────────────────────────────────────────────
+
+# User who will own the Adaptix tunnel systemd unit. The service runs AS
+# this user, so the SSH key path must be readable by them.
+operator_user:         "{{ lookup('env', 'USER') }}"
+operator_home:         "{{ lookup('env', 'HOME') }}"
+operator_ssh_key:      "{{ operator_home }}/.ssh/id_rsa"
+
+# ── Adaptix tunnel ───────────────────────────────────────────────────
+
+# Local port the Adaptix GUI client connects to on S1337 (127.0.0.1:{port}).
+adaptix_forward_port:  4322
+
+# Remote port on the teamserver loopback that docker-proxy maps to the
+# adaptix-server container's management listener.
+adaptix_remote_port:   4322

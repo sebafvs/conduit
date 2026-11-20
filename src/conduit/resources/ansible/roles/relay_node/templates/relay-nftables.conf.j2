@@ -1,0 +1,41 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible (relay_node role). Do not edit by hand.
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # loopback
+        iifname "lo" accept
+
+        # established / related
+        ct state established,related accept
+
+        # ICMP + ICMPv6
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # SSH
+        tcp dport {{ relay_firewall_ssh_port }} accept
+
+        # Nebula UDP
+        udp dport {{ relay_firewall_nebula_port }} accept
+
+        # Nebula tunnel interface (allow everything on the mesh)
+        iifname "nebula0" accept
+
+        # log + drop everything else
+        log prefix "[nft-relay-drop] " limit rate 5/minute
+        drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

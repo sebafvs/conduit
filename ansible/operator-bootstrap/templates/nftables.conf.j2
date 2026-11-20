@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+
+# Managed by conduit operator-bootstrap (ssh-lockdown). Do not hand-edit.
+# Docker's ip filter / ip nat tables are managed by docker at runtime.
+
+destroy table inet filter
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        udp dport {{ wg_listen_port }} accept
+        ip saddr {{ wg_cidr }} tcp dport 22 accept
+        icmp type echo-request accept
+        icmpv6 type echo-request accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

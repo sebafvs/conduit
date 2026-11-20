@@ -1,0 +1,31 @@
+---
+# Rendered by conduit from redirector "{{ r.name }}". Do not edit by hand.
+
+tor_hs_name: "{{ r.name }}"
+tor_hs_tor_version: "{{ cfg.tor_version }}"
+tor_hs_socks_port: {{ socks_port }}
+tor_hs_use_bridges: {{ cfg.use_bridges | string | lower }}
+tor_hs_pluggable_transport: "{{ cfg.pluggable_transport }}"
+
+tor_hs_services:
+{% for svc in cfg.services %}
+  - name: {{ svc.name }}
+    hs_dir: "{{ svc.hs_dir }}"
+    external_port: {{ svc.external_port }}
+    backend_host: "{{ svc.backend_host }}"
+    backend_port: {{ svc.backend_port }}
+    version: {{ svc.version }}
+{% if svc.client_auth_pubkeys %}
+    client_auth_pubkeys:
+{% for pk in svc.client_auth_pubkeys %}
+      - "{{ pk }}"
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{% if cfg.authority_lines %}
+tor_hs_authority_lines:
+{% for line in cfg.authority_lines %}
+  - "{{ line }}"
+{% endfor %}
+{% endif %}

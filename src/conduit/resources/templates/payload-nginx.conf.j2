@@ -1,0 +1,53 @@
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format staging '$remote_addr - [$time_local] "$request" '
+                       '$status $body_bytes_sent "$http_user_agent"';
+    access_log /var/log/nginx/access.log staging;
+    error_log  /var/log/nginx/error.log warn;
+
+    server {
+        listen 443 ssl;
+        server_name {{ leaf.cn }}{% for san in leaf.sans_dns if san != leaf.cn %} {{ san }}{% endfor %};
+
+        ssl_certificate     /etc/nginx/certs/fullchain.crt;
+        ssl_certificate_key /etc/nginx/certs/leaf.key;
+
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers   HIGH:!aNULL:!MD5;
+
+        root /usr/share/nginx/html;
+        autoindex {{ 'on' if payload.autoindex else 'off' }};
+
+        server_tokens off;
+        add_header Server "{{ payload.server_header_fake }}" always;
+
+        location / {
+            try_files $uri =404;
+        }
+    }
+
+{% if payload.crl_endpoint.enabled %}
+    server {
+        listen 80;
+        server_name _;
+
+        server_tokens off;
+        add_header Server "{{ payload.server_header_fake }}" always;
+
+        location {{ crl_dir }} {
+            root /usr/share/nginx/html;
+            default_type application/pkix-crl;
+        }
+
+        location / {
+            return 404;
+        }
+    }
+{% endif %}
+}

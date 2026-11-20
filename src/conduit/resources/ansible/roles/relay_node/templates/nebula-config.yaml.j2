@@ -1,0 +1,50 @@
+pki:
+  ca: /opt/nebula/ca/ca.crt
+  cert: /opt/nebula/ca/{{ relay_name }}.crt
+  key: /opt/nebula/ca/{{ relay_name }}.key
+
+static_host_map:
+{% for entry in relay_nebula_static_hosts %}
+  "{{ entry.nebula_ip }}": ["{{ entry.public_addr }}"]
+{% endfor %}
+
+lighthouse:
+  am_lighthouse: {{ relay_nebula_is_lighthouse | lower }}
+  interval: 60
+{% if not relay_nebula_is_lighthouse %}
+  hosts:
+{% for lh in relay_nebula_lighthouse_hosts %}
+    - "{{ lh }}"
+{% endfor %}
+{% endif %}
+
+listen:
+  host: 0.0.0.0
+  port: {{ relay_nebula_listen_port }}
+
+punchy:
+  punch: true
+
+tun:
+  dev: nebula0
+  drop_local_broadcast: false
+  drop_multicast: false
+
+logging:
+  level: info
+  format: text
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: icmp
+      host: any
+{% for grp in relay_nebula_firewall_allow_ssh_groups %}
+    - port: 22
+      proto: tcp
+      group: {{ grp }}
+{% endfor %}

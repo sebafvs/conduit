@@ -1,0 +1,118 @@
+---
+
+- name: Check if nebula binary exists
+  ansible.builtin.stat:
+    path: /usr/local/bin/nebula
+  register: nebula_bin
+  become: true
+
+- name: Get installed nebula version
+  ansible.builtin.command: /usr/local/bin/nebula -version
+  register: nebula_installed_version
+  changed_when: false
+  failed_when: false
+  when: nebula_bin.stat.exists
+  become: true
+
+- name: Download nebula release tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/slackhq/nebula/releases/download/v{{ redirector_nebula_version }}/nebula-linux-amd64.tar.gz"
+    dest: /tmp/nebula-linux-amd64.tar.gz
+    mode: "0644"
+  become: true
+  when: not nebula_bin.stat.exists or (redirector_nebula_version not in (nebula_installed_version.stdout | default('')))
+
+- name: Extract nebula binaries
+  ansible.builtin.unarchive:
+    src: /tmp/nebula-linux-amd64.tar.gz
+    dest: /usr/local/bin/
+    remote_src: true
+    creates: /usr/local/bin/nebula
+    extra_opts: []
+  become: true
+  when: not nebula_bin.stat.exists or (redirector_nebula_version not in (nebula_installed_version.stdout | default('')))
+
+- name: Ensure /opt/nebula directory exists
+  ansible.builtin.file:
+    path: /opt/nebula
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+
+- name: Deploy Nebula CA certificate
+  ansible.builtin.copy:
+    src: "{{ redirector_nebula_ca_cert }}"
+    dest: /opt/nebula/ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: redirector_nebula_ca_cert | length > 0
+
+- name: Deploy Nebula host certificate
+  ansible.builtin.copy:
+    src: "{{ redirector_nebula_host_cert }}"
+    dest: /opt/nebula/host.crt
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart nebula
+  when: redirector_nebula_host_cert | length > 0
+
+- name: Deploy Nebula host key
+  ansible.builtin.copy:
+    src: "{{ redirector_nebula_host_key }}"
+    dest: /opt/nebula/host.key
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  notify: restart nebula
+  when: redirector_nebula_host_key | length > 0
+
+- name: Template Nebula config
+  ansible.builtin.template:
+    src: nebula-redirector.yaml.j2
+    dest: /opt/nebula/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  notify: restart nebula
+
+- name: Deploy Nebula systemd unit
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Nebula mesh VPN
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/nebula -config /opt/nebula/config.yaml
+      Restart=on-failure
+      RestartSec=10
+      SyslogIdentifier=nebula
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/nebula.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify:
+    - reload systemd
+    - restart nebula
+
+- name: Enable and start Nebula
+  ansible.builtin.systemd:
+    name: nebula
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true

@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conduit-c2"
+version = "1.0.0"
+description = "Deploy and manage AdaptixC2 operator infrastructure (redirectors, Tor, Nebula mesh, SSH CA, Cloudflare Worker) from one YAML config."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "sebafvs", email = "contact@sebafvs.com" },
+]
+keywords = ["c2", "redirector", "adaptix", "infrastructure", "red-team", "nebula", "tor", "openresty"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Installation/Setup",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5,<3",
+    "PyYAML>=6.0,<7",
+    "Jinja2>=3.1,<4",
+    "click>=8.1,<9",
+    "cryptography>=42,<45",
+]
+
+[project.optional-dependencies]
+tui = ["textual>=0.80,<10"]
+dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
+
+[project.scripts]
+conduit = "conduit.cli:main"
+
+[project.urls]
+Homepage      = "https://github.com/sebafvs/conduit"
+Repository    = "https://github.com/sebafvs/conduit"
+Issues        = "https://github.com/sebafvs/conduit/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["conduit*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+"conduit.resources" = [
+    "templates/*.j2",
+    "ansible/*.yml",
+    "ansible/roles/*/defaults/*.yml",
+    "ansible/roles/*/handlers/*.yml",
+    "ansible/roles/*/tasks/*.yml",
+    "ansible/roles/*/templates/*",
+    "redirector/README.md",
+    "redirector/data/*.txt",
+    "redirector/fail2ban/filter.d/*.conf",
+    "redirector/fail2ban/jail.d/*.conf",
+    "redirector/lua/*.lua",
+    "redirector/nftables/*.nft",
+    "redirector/openresty/*.conf",
+    "redirector/openresty/conf.d/*.conf",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

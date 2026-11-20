@@ -1,0 +1,43 @@
+// Rendered by conduit from filter profile. Do not edit by hand.
+const ALLOWED_PATHS = new Set({{ uris | tojson }});
+const EXPECTED_UA = {{ ua | tojson }};
+{% if require_header_name %}
+const REQUIRE_HEADER = {{ require_header_name | tojson }};
+{% endif %}
+
+const DECOY_HTML =
+  "<!DOCTYPE html><html><head><title>403 Forbidden</title></head>" +
+  "<body><center><h1>403 Forbidden</h1></center><hr>" +
+  "<center>cloudflare</center></body></html>";
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/.well-known/acme-challenge/")) {
+      return fetch(request);
+    }
+
+    const isPost = request.method === "POST";
+    const pathMatch = ALLOWED_PATHS.has(url.pathname);
+    const uaMatch = request.headers.get("user-agent") === EXPECTED_UA;
+{% if require_header_name %}
+    const hasRequired = request.headers.has(REQUIRE_HEADER);
+{% else %}
+    const hasRequired = true;
+{% endif %}
+
+    if (isPost && pathMatch && uaMatch && hasRequired) {
+      return fetch(request);
+    }
+
+    return new Response(DECOY_HTML, {
+      status: 403,
+      headers: {
+        "content-type": "text/html; charset=UTF-8",
+        "server": "cloudflare",
+        "cache-control": "no-store",
+      },
+    });
+  },
+};

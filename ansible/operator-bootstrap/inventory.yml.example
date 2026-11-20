@@ -1,0 +1,28 @@
+---
+# Copy to inventory.yml (gitignored) and fill in the placeholders.
+#
+# Two phases of life for this file:
+#
+# 1) FIRST RUN (teamserver SSH still open to the internet):
+#      ansible_host: <teamserver public IP>
+#    Ansible SSHes over clearnet to the public IP.
+#
+# 2) AFTER ssh-lockdown.yml (public SSH closed):
+#      ansible_host: 10.200.0.1
+#    Ansible SSHes over the WG overlay. The playbook also needs to know the
+#    real public IP so the operator WG config's Endpoint stays correct; pass
+#    it on every re-run:
+#      ansible-playbook -i inventory.yml operator-bootstrap.yml \
+#        -e teamserver_public_ip=<teamserver public IP>
+
+all:
+  hosts:
+    teamserver:
+      ansible_host: TEAMSERVER_PUBLIC_IP
+      ansible_user: root
+      ansible_ssh_private_key_file: ~/.ssh/id_rsa
+      ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

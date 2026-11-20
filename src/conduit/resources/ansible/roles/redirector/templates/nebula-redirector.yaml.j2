@@ -1,0 +1,48 @@
+pki:
+  ca: /opt/nebula/ca.crt
+  cert: /opt/nebula/host.crt
+  key: /opt/nebula/host.key
+
+static_host_map:
+{% for entry in redirector_nebula_static_hosts %}
+  "{{ entry.nebula_ip }}": ["{{ entry.public_addr }}"]
+{% endfor %}
+
+lighthouse:
+  am_lighthouse: false
+  interval: 60
+  hosts:
+{% for lh in redirector_nebula_lighthouse_hosts %}
+    - "{{ lh }}"
+{% endfor %}
+
+listen:
+  host: 0.0.0.0
+  port: {{ redirector_nebula_listen_port }}
+
+punchy:
+  punch: true
+
+tun:
+  dev: nebula0
+  drop_local_broadcast: false
+  drop_multicast: false
+
+logging:
+  level: info
+  format: text
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: icmp
+      host: any
+{% for grp in redirector_nebula_firewall_allow_ssh_groups %}
+    - port: 22
+      proto: tcp
+      group: {{ grp }}
+{% endfor %}

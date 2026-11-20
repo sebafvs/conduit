@@ -1,0 +1,11 @@
+# Managed by conduit operator-bootstrap. Do not hand-edit.
+[Interface]
+Address = {{ wg_operator_ip }}/{{ wg_cidr_prefix }}
+PrivateKey = {{ operator_wg_privkey }}
+
+[Peer]
+# teamserver
+PublicKey = {{ teamserver_wg_pubkey }}
+Endpoint = {{ teamserver_public_ip }}:{{ wg_listen_port }}
+AllowedIPs = {{ wg_cidr }}
+PersistentKeepalive = {{ wg_persistent_keepalive }}

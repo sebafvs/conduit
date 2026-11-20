@@ -1,0 +1,3 @@
+# placeholder, overridden by config.yml redirector_sni_allow
+cdn-sync.net
+www.cdn-sync.net
